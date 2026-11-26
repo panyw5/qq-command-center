@@ -306,6 +306,9 @@ impl App {
         let Some(session) = self.session.clone() else {
             return;
         };
+        if self.busy {
+            return;
+        }
         let text = self.input.trim().to_string();
         let image = self.image.as_ref().map(|(_, b64)| b64.clone());
         let mentions: Vec<String> = self.mentions.iter().map(|m| m.uin.clone()).collect();
@@ -836,8 +839,8 @@ impl App {
                 self.overlay = Overlay::None;
             }
             KeyCode::Enter => {
+                // 发送后保持在输入模式，可连续打字发送（Esc 才退出）。
                 self.send();
-                self.overlay = Overlay::None;
             }
             KeyCode::Backspace => {
                 self.input.pop();

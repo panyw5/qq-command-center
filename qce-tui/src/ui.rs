@@ -9,7 +9,7 @@ use ratatui_image::{Resize, StatefulImage};
 
 const HELP_SESSIONS: &str = "j/k sel  Enter open  Tab sw  / filter  r reload  q quit";
 const HELP_CHAT: &str = "j/k sel  o view  O open  y cp  s fwd  i in  a @  p img  G end  Esc";
-const HELP_INPUT: &str = "Enter send  Esc cancel  (a/p outside input)";
+const HELP_INPUT: &str = "Enter send·stay  Esc exit  (a/p outside input)";
 
 fn dim() -> Style {
     Style::default().fg(Color::DarkGray)
