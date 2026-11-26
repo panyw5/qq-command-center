@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui_image::{Resize, StatefulImage};
 
 const HELP_SESSIONS: &str = "j/k 移动  Enter 打开  Tab 切换  / 过滤  r 刷新  q 退出";
-const HELP_CHAT: &str = "j/k 选择  o 预览图片  O 外部打开  y 复制  i 输入  a @  p 图  G 底  Esc";
+const HELP_CHAT: &str = "j/k 选择  o 预览  O 打开  y 复制  s 转图  i 输入  a @  p 图  G 底  Esc";
 const HELP_INPUT: &str = "Enter 发送  Esc 取消  (a 加@提及 / p 附加图片先退出输入)";
 
 fn dim() -> Style {
@@ -412,12 +412,26 @@ fn draw_preview(f: &mut Frame, app: &mut App) {
         height: h,
     };
     f.render_widget(Clear, rect);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" {} (按任意键关闭) ", app.preview_title));
+    let (title, proto) = match app.preview.as_mut() {
+        Some(pv) => {
+            let t = if pv.frame_count() > 1 {
+                format!(
+                    " {} [{}/{}] (按任意键关闭) ",
+                    pv.title,
+                    pv.idx() + 1,
+                    pv.frame_count()
+                )
+            } else {
+                format!(" {} (按任意键关闭) ", pv.title)
+            };
+            (t, Some(&mut pv.proto))
+        }
+        None => (" 预览 ".to_string(), None),
+    };
+    let block = Block::default().borders(Borders::ALL).title(title);
     let inner = block.inner(rect);
     f.render_widget(block, rect);
-    if let Some(proto) = app.preview.as_mut() {
+    if let Some(proto) = proto {
         // Scale（而非 Fit）：小图也按比例放大铺满预览区；Triangle 滤镜比 Nearest 平滑。
         let widget =
             StatefulImage::new().resize(Resize::Scale(Some(image::imageops::FilterType::Triangle)));

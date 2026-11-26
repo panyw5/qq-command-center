@@ -8,6 +8,34 @@ use ratatui_image::protocol::StatefulProtocol;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
+/// 预览状态：静态图只有 proto；动图按 delay 逐帧轮换 proto。
+pub struct Preview {
+    pub proto: StatefulProtocol,
+    pub title: String,
+    /// 帧数 > 1 时视为动画（GIF/APNG）。
+    frames: Vec<AnimFrame>,
+    idx: usize,
+    wait: Duration,
+}
+
+impl Preview {
+    /// 动画总帧数（<=1 表示静态）。
+    pub fn frame_count(&self) -> usize {
+        self.frames.len()
+    }
+
+    /// 当前帧下标。
+    pub fn idx(&self) -> usize {
+        self.idx
+    }
+}
+
+/// 解码出的一帧动画。
+struct AnimFrame {
+    img: image::DynamicImage,
+    delay: Duration,
+}
+
 /// 界面顶层：会话列表 / 聊天页。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -102,9 +130,8 @@ pub struct App {
     last_click: Option<(Instant, usize)>,
     /// 终端图形协议选择器（启动时探测，不支持则半块渲染）。
     picker: Option<Picker>,
-    /// 当前内联预览的图片协议状态。
-    pub preview: Option<StatefulProtocol>,
-    pub preview_title: String,
+    /// 当前内联预览状态（含动画帧）。
+    pub preview: Option<Preview>,
 
     // 输入区
     pub input: String,
@@ -148,7 +175,6 @@ impl App {
             last_click: None,
             picker: None,
             preview: None,
-            preview_title: String::new(),
             input: String::new(),
             image: None,
             image_path: String::new(),
@@ -339,6 +365,7 @@ impl App {
         while let Ok(event) = self.rx.try_recv() {
             self.handle_event(event);
         }
+        self.advance_anim();
         if self.screen == Screen::Chat
             && self.overlay == Overlay::None
             && self.last_poll.elapsed() >= POLL_INTERVAL
@@ -346,6 +373,52 @@ impl App {
             self.last_poll = Instant::now();
             self.refresh_messages();
         }
+    }
+
+    /// 动图预览：按帧延时推进，重新生成对应帧的渲染协议。
+    fn advance_anim(&mut self) {
+        const TICK: Duration = Duration::from_millis(100);
+        let Some(pv) = &mut self.preview else {
+            return;
+        };
+        if pv.frames.len() < 2 {
+            return;
+        }
+        if pv.wait > TICK {
+            pv.wait -= TICK;
+            return;
+        }
+        pv.idx = (pv.idx + 1) % pv.frames.len();
+        pv.wait = pv.frames[pv.idx].delay;
+        if let Some(picker) = &self.picker {
+            pv.proto = picker.new_resize_protocol(pv.frames[pv.idx].img.clone());
+        }
+    }
+
+    /// 解码预览：多帧 GIF/APNG 走动画，否则静态图。
+    fn make_preview(&self, name: String, bytes: &[u8]) -> Result<Preview, String> {
+        let Some(picker) = &self.picker else {
+            return Err("图形协议未初始化".to_string());
+        };
+        let frames = decode_anim_frames(bytes);
+        if frames.len() > 1 {
+            let proto = picker.new_resize_protocol(frames[0].img.clone());
+            return Ok(Preview {
+                proto,
+                title: name,
+                frames,
+                idx: 0,
+                wait: Duration::ZERO,
+            });
+        }
+        let img = image::load_from_memory(bytes).map_err(|_| "不是可预览的图片格式".to_string())?;
+        Ok(Preview {
+            proto: picker.new_resize_protocol(img),
+            title: name,
+            frames: Vec::new(),
+            idx: 0,
+            wait: Duration::ZERO,
+        })
     }
 
     fn handle_event(&mut self, event: AppEvent) {
@@ -408,17 +481,13 @@ impl App {
                 Err(e) => self.status = e,
             },
             AppEvent::PreviewLoaded(result) => match result {
-                Ok((name, bytes)) => match image::load_from_memory(&bytes) {
-                    Ok(dyn_img) => match &self.picker {
-                        Some(picker) => {
-                            self.preview = Some(picker.new_resize_protocol(dyn_img));
-                            self.preview_title = name;
-                            self.overlay = Overlay::Preview;
-                            self.status = format!("预览 {}", self.preview_title);
-                        }
-                        None => self.status = "图形协议未初始化".to_string(),
-                    },
-                    Err(_) => self.status = "不是可预览的图片格式".to_string(),
+                Ok((name, bytes)) => match self.make_preview(name.clone(), &bytes) {
+                    Ok(pv) => {
+                        self.overlay = Overlay::Preview;
+                        self.status = format!("预览 {name}");
+                        self.preview = Some(pv);
+                    }
+                    Err(e) => self.status = e,
                 },
                 Err(e) => self.status = format!("加载媒体失败: {e}"),
             },
@@ -519,6 +588,37 @@ impl App {
             }
             .await;
             AppEvent::MediaOpened(result)
+        });
+    }
+
+    /// 转发表情包：把选中消息的图片/动图下载后附加为待发图片。
+    fn stage_media(&mut self, idx: usize) {
+        let (Some(session), Some(msg)) = (self.session.clone(), self.messages.get(idx)) else {
+            return;
+        };
+        let Some(media) = msg.media.first().cloned() else {
+            self.status = "该消息没有可转发的媒体".to_string();
+            return;
+        };
+        if media.local_path.is_none() {
+            self.status = "媒体无本地缓存，无法转发".to_string();
+            return;
+        }
+        self.status = format!("读取 {} …", media.file_name);
+        let client = self.client.clone();
+        self.spawn(async move {
+            AppEvent::ImageStaged(
+                client
+                    .fetch_media(&media, &session)
+                    .await
+                    .map(|(b, _)| {
+                        (
+                            media.file_name.clone(),
+                            base64::engine::general_purpose::STANDARD.encode(b),
+                        )
+                    })
+                    .map_err(|e| format!("读取媒体失败: {e}")),
+            )
         });
     }
 
@@ -704,6 +804,7 @@ impl App {
             KeyCode::Char('o') => self.preview_media(self.sel_msg),
             KeyCode::Char('O') => self.open_media(self.sel_msg),
             KeyCode::Char('y') => self.copy_media_link(self.sel_msg),
+            KeyCode::Char('s') => self.stage_media(self.sel_msg),
             KeyCode::PageDown => {
                 self.scroll_bottom = self.scroll_bottom.saturating_sub(10);
             }
@@ -782,4 +883,34 @@ impl App {
             _ => {}
         }
     }
+}
+
+/// 解码 GIF/APNG 动图帧；静态图或解码失败返回空 Vec。
+fn decode_anim_frames(bytes: &[u8]) -> Vec<AnimFrame> {
+    use image::AnimationDecoder as _;
+    let cursor = || std::io::BufReader::new(std::io::Cursor::new(bytes));
+    let frames = if bytes.starts_with(b"GIF8") {
+        image::codecs::gif::GifDecoder::new(cursor()).and_then(|d| d.into_frames().collect_frames())
+    } else if bytes.starts_with(b"\x89PNG") {
+        image::codecs::png::PngDecoder::new(cursor())
+            .and_then(image::codecs::png::PngDecoder::apng)
+            .and_then(|d| d.into_frames().collect_frames())
+    } else {
+        return Vec::new();
+    };
+    let Ok(frames) = frames else {
+        return Vec::new();
+    };
+    frames
+        .into_iter()
+        .map(|f| {
+            let (n, d) = f.delay().numer_denom_ms();
+            // 比率单位即毫秒：delay = n/d ms
+            let ms = u64::from(n) / u64::from(d.max(1));
+            AnimFrame {
+                img: image::DynamicImage::ImageRgba8(f.into_buffer()),
+                delay: Duration::from_millis(ms.clamp(40, 30_000)),
+            }
+        })
+        .collect()
 }
