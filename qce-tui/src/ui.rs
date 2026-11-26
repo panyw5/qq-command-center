@@ -7,9 +7,9 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::Frame;
 use ratatui_image::{Resize, StatefulImage};
 
-const HELP_SESSIONS: &str = "j/k 移动  Enter 打开  Tab 切换  / 过滤  r 刷新  q 退出";
-const HELP_CHAT: &str = "j/k 选择  o 预览  O 打开  y 复制  s 转图  i 输入  a @  p 图  G 底  Esc";
-const HELP_INPUT: &str = "Enter 发送  Esc 取消  (a 加@提及 / p 附加图片先退出输入)";
+const HELP_SESSIONS: &str = "j/k sel  Enter open  Tab sw  / filter  r reload  q quit";
+const HELP_CHAT: &str = "j/k sel  o view  O open  y cp  s fwd  i in  a @  p img  G end  Esc";
+const HELP_INPUT: &str = "Enter send  Esc cancel  (a/p outside input)";
 
 fn dim() -> Style {
     Style::default().fg(Color::DarkGray)
@@ -115,9 +115,29 @@ fn session_line(s: &Session, selected: bool, width: usize) -> Line<'static> {
     Line::from(Span::styled(text, style))
 }
 
+/// 由  派生的伪请求 ID（FNV-1a 哈希，8 位 hex，同一条消息稳定）。
+fn req_id(msg: &ChatMessage) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in msg.msg_id.as_bytes() {
+        h = (h ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")[..8].to_string()
+}
+
 fn message_lines(msg: &ChatMessage, width: usize, selected: bool) -> Vec<Line<'static>> {
     let marker = if selected { "▎" } else { " " };
-    let head = format!("{marker}{} {}", fmt_time(msg.time), msg.sender);
+    // 伪装成日志行：[ts.millis] uid=sender req:xxxxxxxx
+    let millis = if msg.time > 10_000_000_000 {
+        msg.time.rem_euclid(1000)
+    } else {
+        0
+    };
+    let head = format!(
+        "{marker}[{}.{millis:03}] uid={} req:{}",
+        fmt_time(msg.time),
+        msg.sender,
+        req_id(msg),
+    );
     let head_style = if selected {
         Style::default()
             .fg(Color::Yellow)
@@ -134,7 +154,7 @@ fn message_lines(msg: &ChatMessage, width: usize, selected: bool) -> Vec<Line<'s
         } else {
             Style::default()
         };
-        lines.push(Line::from(Span::styled(format!("  {seg}"), style)));
+        lines.push(Line::from(Span::styled(format!("    {seg}"), style)));
     }
     lines
 }
@@ -171,15 +191,12 @@ fn draw_sessions(f: &mut Frame, app: &App) {
     if app.filtering || !app.filter.is_empty() {
         title_spans.push(Span::styled(format!("  /{}", app.filter), dim()));
     }
-    let title = Paragraph::new(Line::from(title_spans)).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" QQ Chat Exporter TUI "),
-    );
+    let title = Paragraph::new(Line::from(title_spans))
+        .block(Block::default().borders(Borders::ALL).title(" qce-dev "));
     f.render_widget(title, chunks[0]);
     if app.filtering {
-        // 左边框(1) + " QCE "(5) + " "(1) + 页签(6+6+4) + "  /"(3)
-        let x = chunks[0].x + 26 + tw(&app.filter);
+        // 左边框(1) + " QCE "(5) + " "(1) + 页签(8+7+8) + "  /"(3)
+        let x = chunks[0].x + 33 + tw(&app.filter);
         f.set_cursor_position((x.min(chunks[0].right().saturating_sub(2)), chunks[0].y + 1));
     }
 
@@ -191,7 +208,7 @@ fn draw_sessions(f: &mut Frame, app: &App) {
         .enumerate()
         .map(|(i, s)| ListItem::new(session_line(s, i == app.selected, inner_width)))
         .collect();
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(" 会话 "));
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(" targets "));
     f.render_widget(list, chunks[1]);
 
     // 状态 + 帮助
@@ -222,11 +239,11 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         Span::styled(" < ", dim()),
         Span::styled(app.peer_name(), accent()),
     ]))
-    .block(Block::default().borders(Borders::ALL).title(" 会话 "));
+    .block(Block::default().borders(Borders::ALL).title(" targets "));
     f.render_widget(title, chunks[0]);
     if app.filtering {
-        // 左边框(1) + " QCE "(5) + " "(1) + 页签(6+6+4) + "  /"(3)
-        let x = chunks[0].x + 26 + tw(&app.filter);
+        // 左边框(1) + " QCE "(5) + " "(1) + 页签(8+7+8) + "  /"(3)
+        let x = chunks[0].x + 33 + tw(&app.filter);
         f.set_cursor_position((x.min(chunks[0].right().saturating_sub(2)), chunks[0].y + 1));
     }
 
@@ -268,7 +285,7 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
     let start_y = u16::try_from(start).unwrap_or(u16::MAX);
     let para = Paragraph::new(ratatui::text::Text::from(lines))
         .scroll((start_y, 0))
-        .block(Block::default().borders(Borders::ALL).title(" 消息 "));
+        .block(Block::default().borders(Borders::ALL).title(" trace "));
     f.render_widget(para, chunks[1]);
 
     // 附加内容提示行（图片/提及）
@@ -310,7 +327,7 @@ fn draw_input_line(f: &mut Frame, app: &App, area: Rect) {
             format!(" 图片路径: {}", app.image_path),
             Some(11 + tw(&app.image_path)),
         ),
-        _ => (" 按 i 输入消息，Enter 快捷进入输入".to_string(), None),
+        _ => (" i:compose  Enter:edit".to_string(), None),
     };
     f.render_widget(
         Paragraph::new(Span::styled(
@@ -346,13 +363,13 @@ fn draw_mention_picker(f: &mut Frame, app: &App) {
         .split(rect);
 
     let filter = Paragraph::new(Span::styled(
-        format!(" 过滤: {}", app.member_filter),
+        format!(" filter: {}", app.member_filter),
         Style::default(),
     ));
     f.render_widget(filter, chunks[0]);
-    // " 过滤: " = 1 + 4 + 1 + 1
+    // " filter: " = 8
     f.set_cursor_position((
-        chunks[0].x + 7 + tw(&app.member_filter).min(chunks[0].width.saturating_sub(8)),
+        chunks[0].x + 9 + tw(&app.member_filter).min(chunks[0].width.saturating_sub(8)),
         chunks[0].y,
     ));
 
@@ -380,9 +397,9 @@ fn draw_mention_picker(f: &mut Frame, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(if app.members_loading {
-            " @ 成员 (加载中…) "
+            " @members (loading…) "
         } else {
-            " @ 成员 "
+            " @members "
         });
     f.render_widget(List::new(items).block(block), chunks[1]);
 }
@@ -416,13 +433,13 @@ fn draw_preview(f: &mut Frame, app: &mut App) {
         Some(pv) => {
             let t = if pv.frame_count() > 1 {
                 format!(
-                    " {} [{}/{}] (按任意键关闭) ",
+                    " {} [{}/{}] (any key) ",
                     pv.title,
                     pv.idx() + 1,
                     pv.frame_count()
                 )
             } else {
-                format!(" {} (按任意键关闭) ", pv.title)
+                format!(" {} (any key) ", pv.title)
             };
             (t, Some(&mut pv.proto))
         }

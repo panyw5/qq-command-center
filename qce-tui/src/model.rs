@@ -46,6 +46,7 @@ pub struct MediaRef {
 /// 单条消息（已把 elements 渲染成展示文本）。
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
+    pub msg_id: String,
     pub time: i64,
     pub sender: String,
     pub is_self: bool,
@@ -122,9 +123,9 @@ fn render_element(el: &Value) -> Option<String> {
     if let Some(pic) = el.get("picElement").filter(|v| !v.is_null()) {
         let name = str_field(pic, "fileName").unwrap_or("");
         return Some(if name.is_empty() {
-            "[图片]".to_string()
+            "[img]".to_string()
         } else {
-            format!("[图片 {name}]")
+            format!("[img:{name}]")
         });
     }
     if let Some(face) = el.get("faceElement").filter(|v| !v.is_null()) {
@@ -132,24 +133,24 @@ fn render_element(el: &Value) -> Option<String> {
             .map(|i| i.to_string())
             .unwrap_or_default();
         return Some(if idx.is_empty() {
-            "[表情]".to_string()
+            "[em]".to_string()
         } else {
-            format!("[表情 {idx}]")
+            format!("[em:{idx}]")
         });
     }
     if let Some(mf) = el.get("marketFaceElement").filter(|v| !v.is_null()) {
         let name = str_field(mf, "faceName").unwrap_or("贴纸");
-        return Some(format!("[{name}]"));
+        return Some(format!("[stk:{name}]"));
     }
     if el.get("videoElement").is_some_and(|v| !v.is_null()) {
-        return Some("[视频]".to_string());
+        return Some("[vid]".to_string());
     }
     if el.get("pttElement").is_some_and(|v| !v.is_null()) {
-        return Some("[语音]".to_string());
+        return Some("[aud]".to_string());
     }
     if let Some(file) = el.get("fileElement").filter(|v| !v.is_null()) {
         let name = str_field(file, "fileName").unwrap_or("文件");
-        return Some(format!("[文件 {name}]"));
+        return Some(format!("[file:{name}]"));
     }
     if let Some(reply) = el.get("replyElement").filter(|v| !v.is_null()) {
         let text = reply
@@ -163,26 +164,26 @@ fn render_element(el: &Value) -> Option<String> {
             .filter(|s| !s.is_empty())
             .or_else(|| str_field(reply, "sourceMsgText").map(str::to_string));
         return Some(match text {
-            Some(t) => format!("[回复 {t}]"),
-            None => "[回复]".to_string(),
+            Some(t) => format!("[reply:{t}]"),
+            None => "[reply]".to_string(),
         });
     }
     if let Some(tip) = el.get("grayTipElement").filter(|v| !v.is_null()) {
         // 系统提示：xmlElement 或 jsonElement 内含可读文本的场景较杂，统一占位。
         let _ = tip;
-        return Some("[系统提示]".to_string());
+        return Some("[sys]".to_string());
     }
     if el
         .get("multiForwardMsgElement")
         .is_some_and(|v| !v.is_null())
     {
-        return Some("[转发消息]".to_string());
+        return Some("[fwd]".to_string());
     }
     if el.get("arkElement").is_some_and(|v| !v.is_null()) {
-        return Some("[卡片消息]".to_string());
+        return Some("[card]".to_string());
     }
     if el.get("markdownElement").is_some_and(|v| !v.is_null()) {
-        return Some("[Markdown 消息]".to_string());
+        return Some("[md]".to_string());
     }
     None
 }
@@ -201,7 +202,7 @@ pub fn parse_message(raw: &Value) -> ChatMessage {
     .find(|s| !s.is_empty())
     .map(str::to_string)
     .or_else(|| str_field(raw, "senderUid").map(|u| u.chars().take(12).collect()))
-    .unwrap_or_else(|| "?".to_string());
+    .unwrap_or_else(|| "anon".to_string());
 
     let msg_id = str_field(raw, "msgId").unwrap_or_default().to_string();
     let mut parts = Vec::new();
@@ -217,11 +218,12 @@ pub fn parse_message(raw: &Value) -> ChatMessage {
         }
     }
     let body = if parts.is_empty() {
-        "[不支持的消息类型]".to_string()
+        "[unsupported]".to_string()
     } else {
         parts.join(" ")
     };
     ChatMessage {
+        msg_id,
         time,
         sender,
         is_self,

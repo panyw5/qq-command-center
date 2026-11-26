@@ -76,9 +76,9 @@ impl Tab {
 
     pub fn title(self) -> &'static str {
         match self {
-            Self::Recent => "最近",
-            Self::Friends => "好友",
-            Self::Groups => "群",
+            Self::Recent => "recent",
+            Self::Friends => "peers",
+            Self::Groups => "groups",
         }
     }
 }

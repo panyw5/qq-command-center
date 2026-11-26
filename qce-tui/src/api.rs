@@ -70,7 +70,7 @@ impl QceClient {
                     peer_uid: uid,
                     peer_uin: str_of(f, &["uin"]).unwrap_or_default(),
                     name,
-                    tag: "好友".to_string(),
+                    tag: "peer".to_string(),
                 })
             })
             .collect())
@@ -92,7 +92,7 @@ impl QceClient {
                     peer_uid: code.clone(),
                     peer_uin: code,
                     name,
-                    tag: "群".to_string(),
+                    tag: "grp".to_string(),
                 })
             })
             .collect())
@@ -298,9 +298,9 @@ fn extract_sessions(data: &Value) -> Vec<Session> {
             peer_uin: uin,
             name,
             tag: if chat_type == 2 {
-                "群".to_string()
+                "grp".to_string()
             } else {
-                "最近".to_string()
+                "rec".to_string()
             },
         });
     }
