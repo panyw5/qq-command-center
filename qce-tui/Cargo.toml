@@ -1,0 +1,26 @@
+[package]
+name = "qce-tui"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "Terminal UI client for QQ Chat Exporter — quick session browsing and messaging"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+crossterm = "0.28"
+dirs = "5"
+ratatui = "0.29"
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
