@@ -306,7 +306,7 @@ export function MessagePreviewModal({ open, onClose, chat, onExport, canSend = f
     }
   }
 
-  const formatMessageElements = (elements: any[]): React.ReactNode[] => {
+  const formatMessageElements = (elements: any[], msg?: any): React.ReactNode[] => {
     if (!elements?.length) return [<span key="empty" className="text-muted-foreground/50 italic">无文本内容</span>]
     const nodes: React.ReactNode[] = []
     let hasContent = false
@@ -347,9 +347,32 @@ export function MessagePreviewModal({ open, onClose, chat, onExport, canSend = f
         }
         hasContent = true
       } else if (el.picElement) {
-        const picUrl = el.picElement.originImageUrl || el.picElement.sourcePath || el.picElement.thumbPath || ''
-        const w = el.picElement.picWidth || 200
-        const h = el.picElement.picHeight || 200
+        const pic = el.picElement
+        const thumbRaw = pic.thumbPath
+        // NTQQ 的 thumbPath 是 { "0": path } 形式的对象而非字符串。
+        const thumbPath =
+          typeof thumbRaw === 'string' && thumbRaw
+            ? thumbRaw
+            : thumbRaw && typeof thumbRaw === 'object'
+              ? (Object.values(thumbRaw)[0] as string) || ''
+              : ''
+        const localPath = pic.sourcePath || thumbPath
+        const remoteUrl = pic.originImageUrl || ''
+        // 本地缓存路径经服务端鉴权端点流式返回；附上消息定位参数后，
+        // 服务端可在 NTQQ 懒下载未命中时按需拉取。远程 URL 仅在无本地路径
+        // 时用，并作为本地文件缺失时的兜底（QQ CDN 链接可能已过期）。
+        const picUrl = (() => {
+          if (!localPath) return remoteUrl
+          const params = new URLSearchParams({ path: localPath })
+          if (thumbPath && thumbPath !== localPath) params.set('thumbPath', thumbPath)
+          if (msg?.msgId != null) params.set('msgId', String(msg.msgId))
+          if (msg?.chatType != null) params.set('chatType', String(msg.chatType))
+          if (msg?.peerUid) params.set('peerUid', msg.peerUid)
+          if (el.elementId != null) params.set('elementId', String(el.elementId))
+          return `/api/media/local?${params.toString()}`
+        })()
+        const w = pic.picWidth || 200
+        const h = pic.picHeight || 200
         const displayW = Math.min(w, 200)
         const displayH = Math.round(displayW * (h / w))
         nodes.push(
@@ -361,7 +384,16 @@ export function MessagePreviewModal({ open, onClose, chat, onExport, canSend = f
               height={displayH}
               className="rounded-lg object-cover max-w-[200px] max-h-[150px] bg-muted"
               loading="lazy"
-              onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; (e.target as HTMLImageElement).insertAdjacentHTML('afterend', '<span class="inline-flex items-center gap-1 text-xs text-muted-foreground/70">[\u56fe\u7247]</span>') }}
+              onError={(e) => {
+                const image = e.target as HTMLImageElement
+                if (remoteUrl && image.dataset.fallbackTried !== 'true') {
+                  image.dataset.fallbackTried = 'true'
+                  image.src = remoteUrl
+                  return
+                }
+                image.style.display = 'none'
+                image.insertAdjacentHTML('afterend', '<span class="inline-flex items-center gap-1 text-xs text-muted-foreground/70">[\u56fe\u7247]</span>')
+              }}
             />
           </span>
         )
@@ -715,7 +747,7 @@ export function MessagePreviewModal({ open, onClose, chat, onExport, canSend = f
                           </span>
                         </div>
                         <p className="text-sm text-foreground/80 break-words leading-relaxed">
-                          {formatMessageElements(msg.elements)}
+                          {formatMessageElements(msg.elements, msg)}
                         </p>
                       </div>
                     </div>

@@ -141,7 +141,10 @@ pub async fn auth_middleware(
             // 导出预览 iframe / <img> 标签带不上 `?token=` 或 Authorization 头：
             // 预览页与前端登录时都会把访问令牌写入 Cookie，这里用它兜底。
             // 只在资源只读路径下认 Cookie，避免变成通用 CSRF 凭证。
-            if path.starts_with("/api/exports/files/") || path.starts_with("/resources/") {
+            if path.starts_with("/api/exports/files/")
+                || path.starts_with("/resources/")
+                || path == "/api/media/local"
+            {
                 request
                     .headers()
                     .get(axum::http::header::COOKIE)

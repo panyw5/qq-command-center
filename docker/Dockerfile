@@ -38,7 +38,11 @@ RUN pnpm run build
 # ============================================================
 # Stage 3: Runtime — NapCat + QCE plugin + static frontend
 # ============================================================
-FROM mlikiowa/napcat-docker:latest
+# 原上游 mlikiowa/napcat-docker 在 Docker Hub 已不可拉取（access denied）。
+# 官方发布镜像 ghcr.io/shuakami/napcat-qce 本来就基于它构建，内含相同的
+# NapCat 运行时；下面的 COPY 会把插件/qce-server/前端静态产物整体覆盖成
+# 本仓库源码刚编译出来的版本，最终效果与基于 mlikiowa 一致。
+FROM ghcr.io/shuakami/napcat-qce:latest
 
 # Copy plugin launcher and Rust server
 COPY --from=build /build/plugins/qq-chat-exporter /app/napcat/plugins/napcat-plugin-qce

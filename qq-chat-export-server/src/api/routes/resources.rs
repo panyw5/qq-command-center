@@ -1850,6 +1850,200 @@ pub async fn download_file(
         .into_response()
 }
 
+// GET /api/media/local
+
+const LOCAL_MEDIA_MAX_BYTES: u64 = 64 * 1024 * 1024;
+const LOCAL_MEDIA_ALLOWED_EXTS: &[&str] = &[
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".mp4", ".mov", ".amr", ".silk", ".wav",
+    ".mp3",
+];
+
+fn local_media_ext_allowed(ext: &str) -> bool {
+    LOCAL_MEDIA_ALLOWED_EXTS.contains(&ext)
+}
+
+/// 聊天媒体允许访问的根目录（QQ NT 本地缓存）。
+/// Docker 运行时 `HOME` 仍是 `/root`，而 QQ 数据挂在 `/app/.config/QQ`，
+/// 因此显式补一条容器路径；桌面端按平台惯例补充候选根。
+fn qq_media_roots() -> Vec<PathBuf> {
+    let mut roots = vec![PathBuf::from("/app/.config/QQ")];
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home.join(".config").join("QQ"));
+        roots.push(home.join("Documents").join("Tencent Files"));
+    }
+    roots
+}
+
+/// 本地缓存未命中时，经 NapCat `FileApi.downloadMedia` 按消息定位按需下载。
+/// 需要 msgId/chatType/peerUid/elementId 全套定位参数；独立模式直接放弃。
+async fn fetch_media_on_demand(
+    state: &SharedState,
+    params: &HashMap<String, String>,
+    source_path: &str,
+    roots: &[PathBuf],
+) -> Option<PathBuf> {
+    if state.is_standalone() {
+        return None;
+    }
+    let msg_id = params.get("msgId").filter(|v| !v.is_empty())?;
+    let peer_uid = params.get("peerUid").filter(|v| !v.is_empty())?;
+    let element_id = params.get("elementId").filter(|v| !v.is_empty())?;
+    let chat_type = params.get("chatType")?.parse::<i64>().ok()?;
+    let thumb_path = params.get("thumbPath").map_or("", String::as_str);
+
+    let result = state
+        .napcat
+        .download_media(
+            msg_id,
+            chat_type,
+            peer_uid,
+            element_id,
+            thumb_path,
+            source_path,
+            30_000,
+            false,
+        )
+        .await
+        .ok()?;
+    let returned = match result {
+        Value::String(path) => path,
+        Value::Null => String::new(),
+        other => other
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+    };
+    // 返回值与期望路径任一落盘且仍在数据目录内，即可服务。
+    for candidate in [returned, source_path.to_string()] {
+        if candidate.is_empty() {
+            continue;
+        }
+        if let Some(resolved) = resolve_existing_within(&PathBuf::from(candidate), roots) {
+            if resolved.is_file() {
+                return Some(resolved);
+            }
+        }
+    }
+    None
+}
+
+/// GET /api/media/local?path=...&msgId=&chatType=&peerUid=&elementId=
+///
+/// 消息预览需要渲染聊天媒体。NTQQ 记录的 `picElement` 只携带本地缓存路径
+/// （`/app/.config/QQ/nt_qq_*/nt_data/...`），浏览器无法直接访问，由服务端
+/// 鉴权后流式返回。仅放行 QQ 数据目录内、扩展名在白名单内的媒体文件。
+/// NTQQ 懒下载的媒体缓存未命中时，凭消息定位参数触发按需下载后再返回。
+pub async fn serve_local_media(
+    State(state): State<SharedState>,
+    Extension(RequestId(request_id)): Extension<RequestId>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let Some(raw_path) = params.get("path").filter(|p| !p.is_empty()) else {
+        let err = ApiError::validation("缺少文件路径参数", "MISSING_PATH");
+        return response::error(&err, &request_id);
+    };
+
+    let permission_err = |message: &str, code: &str| {
+        ApiError::new(ErrorType::Api, message, code).with_status(StatusCode::FORBIDDEN)
+    };
+
+    if raw_path.contains("..") || raw_path.contains('\0') || raw_path.contains("%00") {
+        return response::error(
+            &permission_err("非法的文件路径", "INVALID_PATH"),
+            &request_id,
+        );
+    }
+
+    let ext = ext_of(raw_path);
+    if !local_media_ext_allowed(&ext) {
+        return response::error(
+            &permission_err("不允许访问此类型的文件", "FORBIDDEN_FILE_TYPE"),
+            &request_id,
+        );
+    }
+
+    let normalized = PathBuf::from(raw_path);
+    if !normalized.is_absolute() {
+        return response::error(
+            &permission_err("必须使用绝对路径", "RELATIVE_PATH_NOT_ALLOWED"),
+            &request_id,
+        );
+    }
+
+    let roots = qq_media_roots();
+    // 文件可能尚未落盘（NTQQ 懒下载）：resolve_for_creation_within 按已存在的
+    // 祖先目录判定归属，"在数据目录内但文件缺失" 的合法路径继续走按需下载。
+    let Some(inside) = resolve_for_creation_within(&normalized, &roots) else {
+        return response::error(
+            &permission_err("文件不在允许的数据目录内", "PATH_NOT_ALLOWED"),
+            &request_id,
+        );
+    };
+
+    let mut target = inside;
+    if !target.is_file() {
+        match fetch_media_on_demand(&state, &params, raw_path, &roots).await {
+            Some(downloaded) => target = downloaded,
+            None => {
+                let err =
+                    ApiError::new(ErrorType::FileSystem, "媒体文件不可用", "MEDIA_UNAVAILABLE")
+                        .with_status(StatusCode::NOT_FOUND);
+                return response::error(&err, &request_id);
+            }
+        }
+    }
+
+    let file = match open_verified_file(&target) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let err = ApiError::new(ErrorType::FileSystem, "文件不存在", "FILE_NOT_FOUND")
+                .with_status(StatusCode::NOT_FOUND);
+            return response::error(&err, &request_id);
+        }
+        Err(_) => {
+            return response::error(
+                &permission_err("文件路径在安全校验后发生变化", "PATH_NOT_ALLOWED"),
+                &request_id,
+            );
+        }
+    };
+    let Ok(meta) = file.metadata() else {
+        let err = ApiError::new(ErrorType::FileSystem, "文件读取失败", "FILE_READ_ERROR");
+        return response::error(&err, &request_id);
+    };
+    if !meta.is_file() {
+        let err = ApiError::validation("路径不是文件", "NOT_A_FILE");
+        return response::error(&err, &request_id);
+    }
+    if meta.len() > LOCAL_MEDIA_MAX_BYTES {
+        let err = ApiError::new(ErrorType::Api, "媒体文件过大", "MEDIA_TOO_LARGE")
+            .with_status(StatusCode::PAYLOAD_TOO_LARGE);
+        return response::error(&err, &request_id);
+    }
+
+    let mut opened_file = tokio::fs::File::from_std(file);
+    let mut bytes = Vec::new();
+    if opened_file.read_to_end(&mut bytes).await.is_err() {
+        let err = ApiError::new(ErrorType::FileSystem, "文件读取失败", "FILE_READ_ERROR");
+        return response::error(&err, &request_id);
+    }
+
+    let content_type = mime_guess::from_path(&target)
+        .first_or_octet_stream()
+        .to_string();
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CONTENT_DISPOSITION, "inline".to_string()),
+            (header::CACHE_CONTROL, "private, max-age=300".to_string()),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
 // POST /api/open-file-location / /api/open-export-directory
 
 fn extract_html_time_range(html: &str) -> Option<String> {
@@ -3297,13 +3491,14 @@ mod metadata_tests {
     use super::file_manager_target_is_safe;
     use super::{
         apply_file_metadata, avatar_url, existing_file_path, extract_html_time_range,
-        find_sibling_file_ci, group_merge_sources, is_merged_base_name, merge_resource_files,
-        merge_source_messages, merged_export_display_time, merged_output_names,
-        merged_resource_dir_for_file, parse_export_file_name, parse_manifest_metadata,
-        parse_manual_export_file_name, parse_merge_formats, parse_merged_export_file_name,
-        parse_scheduled_export_file_name, registered_export_task_paths,
-        rewrite_merged_resource_paths, should_select_in_file_manager, valid_export_file_name,
-        windows_explorer_args, write_merged_data, MergeSource, MergedWriteOptions,
+        find_sibling_file_ci, group_merge_sources, is_merged_base_name, local_media_ext_allowed,
+        merge_resource_files, merge_source_messages, merged_export_display_time,
+        merged_output_names, merged_resource_dir_for_file, parse_export_file_name,
+        parse_manifest_metadata, parse_manual_export_file_name, parse_merge_formats,
+        parse_merged_export_file_name, parse_scheduled_export_file_name, qq_media_roots,
+        registered_export_task_paths, rewrite_merged_resource_paths, should_select_in_file_manager,
+        valid_export_file_name, windows_explorer_args, write_merged_data, MergeSource,
+        MergedWriteOptions,
     };
     use crate::api::path_security::resolve_existing_exact;
     use serde_json::json;
@@ -3398,6 +3593,25 @@ mod metadata_tests {
         assert!(!file_manager_target_is_safe(&resolved));
 
         fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn local_media_only_allows_media_extensions() {
+        assert!(local_media_ext_allowed(".jpg"));
+        assert!(local_media_ext_allowed(".png"));
+        assert!(local_media_ext_allowed(".mp4"));
+        for rejected in [".json", ".html", ".txt", ".exe", ".db", ""] {
+            assert!(!local_media_ext_allowed(rejected), "{rejected}");
+        }
+    }
+
+    #[test]
+    fn qq_media_roots_are_absolute() {
+        let roots = qq_media_roots();
+        assert!(!roots.is_empty());
+        for root in &roots {
+            assert!(root.is_absolute(), "{root:?}");
+        }
     }
 
     #[test]

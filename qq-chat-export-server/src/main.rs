@@ -416,6 +416,7 @@ fn build_router(
             get(resources::global_resource_files),
         )
         .route("/api/download-file", get(resources::download_file))
+        .route("/api/media/local", get(resources::serve_local_media))
         .route(
             "/api/open-file-location",
             post(resources::open_file_location),
