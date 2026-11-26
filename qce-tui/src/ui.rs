@@ -5,7 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::Frame;
-use ratatui_image::StatefulImage;
+use ratatui_image::{Resize, StatefulImage};
 
 const HELP_SESSIONS: &str = "j/k 移动  Enter 打开  Tab 切换  / 过滤  r 刷新  q 退出";
 const HELP_CHAT: &str = "j/k 选择  o 预览图片  O 外部打开  y 复制  i 输入  a @  p 图  G 底  Esc";
@@ -392,7 +392,9 @@ fn draw_preview(f: &mut Frame, app: &mut App) {
     let inner = block.inner(rect);
     f.render_widget(block, rect);
     if let Some(proto) = app.preview.as_mut() {
-        let widget = StatefulImage::new();
+        // Scale（而非 Fit）：小图也按比例放大铺满预览区；Triangle 滤镜比 Nearest 平滑。
+        let widget =
+            StatefulImage::new().resize(Resize::Scale(Some(image::imageops::FilterType::Triangle)));
         f.render_stateful_widget(widget, inner, proto);
     }
 }
