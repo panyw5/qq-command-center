@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useEffect } from "react"
+import React, { useState, useEffect, useRef } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -18,6 +18,9 @@ import {
   ChevronLeft,
   ChevronRight,
   ExternalLink,
+  Send,
+  AtSign,
+  ImagePlus,
 } from "lucide-react"
 import { format } from "date-fns"
 import { cn } from "@/lib/utils"
@@ -31,9 +34,11 @@ interface MessagePreviewModalProps {
     type: 'group' | 'friend'
     id: string
     name: string
-    peer: { chatType: number, peerUid: string }
+    peer: { chatType: number, peerUid: string, peerUin?: string }
   } | null
   onExport?: (peer: any, timeRange?: { startTime?: number, endTime?: number }) => void
+  /** 是否展示发送消息输入栏（独立查看模式下不展示）。 */
+  canSend?: boolean
 }
 
 interface Message {
@@ -67,7 +72,7 @@ function marketFaceUrls(emojiId: string): { primary: string, fallback: string } 
   return { primary: `${base}.gif`, fallback: `${base}.png` }
 }
 
-export function MessagePreviewModal({ open, onClose, chat, onExport }: MessagePreviewModalProps) {
+export function MessagePreviewModal({ open, onClose, chat, onExport, canSend = false }: MessagePreviewModalProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -82,6 +87,17 @@ export function MessagePreviewModal({ open, onClose, chat, onExport }: MessagePr
   const [useStreamMode, setUseStreamMode] = useState(false)
   const [searchProgress, setSearchProgress] = useState("")
   const [currentFilter, setCurrentFilter] = useState<{ startTime: number; endTime: number } | null>(null)
+  const [draft, setDraft] = useState("")
+  const [sending, setSending] = useState(false)
+  const [sendError, setSendError] = useState<string | null>(null)
+  const [pendingImage, setPendingImage] = useState<{ dataUrl: string; name: string } | null>(null)
+  const [mentions, setMentions] = useState<{ uin: string; name: string }[]>([])
+  const [mentionPickerOpen, setMentionPickerOpen] = useState(false)
+  const [members, setMembers] = useState<any[] | null>(null)
+  const [membersLoading, setMembersLoading] = useState(false)
+  const [memberSearch, setMemberSearch] = useState("")
+  const imageInputRef = useRef<HTMLInputElement>(null)
+  const silentFetchRef = useRef(false)
   
   const MESSAGES_PER_PAGE = 50
   
@@ -114,9 +130,9 @@ export function MessagePreviewModal({ open, onClose, chat, onExport }: MessagePr
     return true
   }
 
-  const fetchMessages = async (page: number, filter?: any) => {
+  const fetchMessages = async (page: number, filter?: any, silent = false) => {
     if (!chat) return
-    setLoading(true)
+    if (!silent) setLoading(true)
     setError(null)
 
     try {
@@ -148,9 +164,9 @@ export function MessagePreviewModal({ open, onClose, chat, onExport }: MessagePr
       setTotalPages(data.totalPages || 1)
       setHasNext(data.hasNext || false)
     } catch (err) {
-      setError(err instanceof Error ? err.message : '获取消息失败')
+      if (!silent) setError(err instanceof Error ? err.message : '获取消息失败')
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
@@ -203,6 +219,90 @@ export function MessagePreviewModal({ open, onClose, chat, onExport }: MessagePr
         endTime: endDate ? Math.floor((new Date(endDate).getTime() + 86400000 - 1) / 1000) : undefined
       })
       onClose()
+    }
+  }
+
+  const loadMembers = async () => {
+    if (!chat || chat.type !== 'group' || members !== null || membersLoading) return
+    setMembersLoading(true)
+    try {
+      const response = await fetch(`/api/groups/${encodeURIComponent(chat.id)}/members`)
+      const result = await response.json()
+      setMembers(result.success ? (result.data || []) : [])
+    } catch {
+      setMembers([])
+    } finally {
+      setMembersLoading(false)
+    }
+  }
+
+  const memberDisplayName = (member: any): string =>
+    String(member?.cardName || member?.card || member?.nick || member?.uin || "成员")
+
+  const filteredMembers = (members || []).filter((member) => {
+    const query = memberSearch.trim().toLowerCase()
+    if (!query) return true
+    return (
+      memberDisplayName(member).toLowerCase().includes(query) ||
+      String(member?.uin || "").includes(query)
+    )
+  }).slice(0, 50)
+
+  const handlePickImage = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ""
+    if (!file) return
+    if (file.size > 20 * 1024 * 1024) {
+      setSendError("图片过大（最大 20MB）")
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      setPendingImage({ dataUrl: String(reader.result), name: file.name })
+      setSendError(null)
+    }
+    reader.onerror = () => setSendError("读取图片失败")
+    reader.readAsDataURL(file)
+  }
+
+  const canSubmit = !!draft.trim() || !!pendingImage || mentions.length > 0
+
+  const handleSend = async () => {
+    if (!chat || sending || !canSubmit) return
+
+    setSending(true)
+    setSendError(null)
+    try {
+      const payload: any = { peer: chat.peer, text: draft.trim() }
+      if (pendingImage) {
+        payload.image = { data: pendingImage.dataUrl, name: pendingImage.name }
+      }
+      if (chat.type === 'group' && mentions.length > 0) {
+        payload.mentions = mentions.map((m) => m.uin)
+      }
+      const response = await fetch('/api/messages/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`)
+      const result = await response.json()
+      if (!result.success) throw new Error(result.error?.message || '发送失败')
+
+      setDraft("")
+      setPendingImage(null)
+      setMentions([])
+      // NapCat 落库有短暂延迟，稍等再刷新到第一页（顺带清掉日期筛选）。
+      setTimeout(() => {
+        const filter = { startTime: 0, endTime: Date.now() }
+        setCurrentPage(1)
+        setCurrentFilter(filter)
+        fetchMessages(1, filter)
+      }, 800)
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : '发送失败')
+    } finally {
+      setSending(false)
     }
   }
 
@@ -371,9 +471,36 @@ export function MessagePreviewModal({ open, onClose, chat, onExport }: MessagePr
       setTimeRangeError(null)
       setError(null)
       setCurrentFilter(null)
+      setDraft("")
+      setSendError(null)
+      setPendingImage(null)
+      setMentions([])
+      setMentionPickerOpen(false)
+      setMembers(null)
+      setMemberSearch("")
       fetchMessages(1)
     }
   }, [open, chat])
+
+  // 会话模式下每 4s 静默拉一次最新消息。仅在第一页、无搜索/流式
+  // 结果、未固定结束日期时轮询，避免打断翻页和筛选浏览。
+  useEffect(() => {
+    if (!open || !canSend || !chat) return
+    const timer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+      if (silentFetchRef.current || loading || useStreamMode || searchQuery.trim() || currentPage !== 1 || endDate) return
+      silentFetchRef.current = true
+      const filter = {
+        startTime: startDate ? new Date(startDate).getTime() : 0,
+        endTime: Date.now()
+      }
+      fetchMessages(1, filter, true).finally(() => {
+        silentFetchRef.current = false
+      })
+    }, 4000)
+    return () => clearInterval(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, canSend, chat, loading, useStreamMode, searchQuery, currentPage, startDate, endDate])
 
   /**
    * Issue #300: 这个预览弹窗本身是 framer-motion 自定义模态，z-index 在更外层 Radix
@@ -598,6 +725,149 @@ export function MessagePreviewModal({ open, onClose, chat, onExport }: MessagePr
             )}
           </div>
         </div>
+
+        {/* Send composer */}
+        {canSend && (
+          <div className="relative px-6 py-3 border-t border-black/[0.06] dark:border-white/[0.06] flex-shrink-0">
+            {sendError && <p className="text-xs text-red-500 mb-2">{sendError}</p>}
+
+            {(mentions.length > 0 || pendingImage) && (
+              <div className="flex items-center gap-1.5 flex-wrap mb-2">
+                {mentions.map((mention) => (
+                  <span
+                    key={mention.uin}
+                    className="inline-flex items-center gap-1 text-xs bg-black/[0.05] dark:bg-white/[0.08] rounded-full pl-2.5 pr-1 py-0.5"
+                  >
+                    @{mention.name}
+                    <button
+                      onClick={() => setMentions((prev) => prev.filter((m) => m.uin !== mention.uin))}
+                      className="w-4 h-4 flex items-center justify-center text-muted-foreground hover:text-foreground rounded-full"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                ))}
+                {pendingImage && (
+                  <span className="inline-flex items-center gap-1.5 text-xs bg-black/[0.05] dark:bg-white/[0.08] rounded-full pl-1 pr-1 py-0.5">
+                    <img src={pendingImage.dataUrl} alt={pendingImage.name} className="w-6 h-6 rounded object-cover" />
+                    <button
+                      onClick={() => setPendingImage(null)}
+                      className="w-4 h-4 flex items-center justify-center text-muted-foreground hover:text-foreground rounded-full"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                )}
+              </div>
+            )}
+
+            <div className="flex items-end gap-2">
+              {chat.type === 'group' && (
+                <button
+                  onClick={() => {
+                    const next = !mentionPickerOpen
+                    setMentionPickerOpen(next)
+                    if (next) loadMembers()
+                  }}
+                  title="提到群成员"
+                  className="w-9 h-9 flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06] rounded-full transition-colors flex-shrink-0"
+                >
+                  <AtSign className="w-4 h-4" />
+                </button>
+              )}
+              <button
+                onClick={() => imageInputRef.current?.click()}
+                title="发送图片"
+                className="w-9 h-9 flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06] rounded-full transition-colors flex-shrink-0"
+              >
+                <ImagePlus className="w-4 h-4" />
+              </button>
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
+                className="hidden"
+                onChange={handlePickImage}
+              />
+              <textarea
+                value={draft}
+                onChange={(e) => { setDraft(e.target.value); if (sendError) setSendError(null) }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                    e.preventDefault()
+                    handleSend()
+                  }
+                }}
+                placeholder={`发消息给 ${chat.name}（Enter 发送，Shift+Enter 换行）`}
+                rows={2}
+                disabled={sending}
+                className="flex-1 resize-none text-sm text-foreground placeholder:text-muted-foreground/60 outline-none px-3 py-2 rounded-xl bg-black/[0.03] dark:bg-white/[0.04]"
+              />
+              <Button
+                size="sm"
+                onClick={handleSend}
+                disabled={sending || !canSubmit}
+                className="rounded-full h-9 px-4"
+              >
+                {sending ? <Loader size={14} className="mr-1.5" /> : <Send className="w-3.5 h-3.5 mr-1.5" />}
+                发送
+              </Button>
+            </div>
+
+            {mentionPickerOpen && chat.type === 'group' && (
+              <div className="absolute bottom-full left-6 mb-2 w-72 rounded-xl border border-black/[0.08] dark:border-white/[0.1] bg-card shadow-[0_12px_40px_rgba(0,0,0,0.12)] dark:shadow-[0_12px_40px_rgba(0,0,0,0.4)] overflow-hidden z-10">
+                <div className="p-2 border-b border-black/[0.06] dark:border-white/[0.06]">
+                  <input
+                    type="text"
+                    value={memberSearch}
+                    onChange={(e) => setMemberSearch(e.target.value)}
+                    placeholder="搜索群成员..."
+                    autoFocus
+                    className="w-full px-2.5 py-1.5 text-xs bg-transparent text-foreground placeholder:text-muted-foreground/60 outline-none rounded-lg bg-black/[0.03] dark:bg-white/[0.04]"
+                  />
+                </div>
+                <div className="max-h-56 overflow-y-auto p-1">
+                  {membersLoading && (
+                    <div className="flex items-center justify-center py-6">
+                      <Loader size={14} className="text-muted-foreground/40" />
+                    </div>
+                  )}
+                  {!membersLoading && members !== null && filteredMembers.length === 0 && (
+                    <p className="text-xs text-muted-foreground text-center py-6">
+                      {members.length === 0 ? '无法获取成员列表' : '没有匹配的成员'}
+                    </p>
+                  )}
+                  {!membersLoading && filteredMembers.map((member) => {
+                    const uin = String(member?.uin || "")
+                    const name = memberDisplayName(member)
+                    const selected = mentions.some((m) => m.uin === uin)
+                    return (
+                      <button
+                        key={uin || member?.uid || name}
+                        disabled={selected || !uin}
+                        onClick={() => {
+                          setMentions((prev) => [...prev, { uin, name }])
+                          setMentionPickerOpen(false)
+                          setMemberSearch("")
+                        }}
+                        className="w-full flex items-center gap-2 px-2.5 py-2 text-left rounded-lg hover:bg-black/[0.04] dark:hover:bg-white/[0.06] disabled:opacity-40 transition-colors"
+                      >
+                        <Avatar className="w-6 h-6 rounded-full">
+                          <AvatarImage src={`https://q1.qlogo.cn/g?b=qq&nk=${uin}&s=40`} />
+                          <AvatarFallback className="text-[10px] bg-muted text-muted-foreground rounded-full">
+                            {name[0]}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="flex-1 text-xs text-foreground truncate">{name}</span>
+                        {selected && <span className="text-[10px] text-muted-foreground">已选</span>}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Footer */}
         <div className="px-6 py-3 border-t border-black/[0.06] dark:border-white/[0.06] flex items-center justify-between flex-shrink-0">

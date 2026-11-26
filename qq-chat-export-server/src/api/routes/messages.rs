@@ -846,6 +846,196 @@ pub async fn fetch_messages(
     paginated
 }
 
+/// 单条发送消息的最大字符数（防御性上限，避免异常超长文本直接打到 QQ）。
+const MAX_SEND_MESSAGE_CHARS: usize = 4000;
+/// 发送图片解码后的大小上限（base64 走 bridge RPC envelope，另有 JSON 开销）。
+const MAX_SEND_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+/// 单条消息最多 @ 的人数。
+const MAX_SEND_MENTIONS: usize = 20;
+/// `POST /api/messages/send` 请求体上限（文本 + base64 图片 + envelope 余量）。
+pub const SEND_MESSAGE_BODY_LIMIT: usize = 32 * 1024 * 1024;
+
+/// 图片魔数白名单（png / jpeg / gif / webp / bmp）。
+fn is_supported_image(bytes: &[u8]) -> bool {
+    (bytes.len() >= 4 && &bytes[..4] == b"\x89PNG")
+        || (bytes.len() >= 3 && &bytes[..3] == b"\xff\xd8\xff")
+        || (bytes.len() >= 4 && &bytes[..4] == b"GIF8")
+        || (bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP")
+        || (bytes.len() >= 2 && &bytes[..2] == b"BM")
+}
+
+/// 从 `image` 字段取出纯 base64；接受裸 base64 或 `data:*;base64,` data URL。
+fn extract_image_base64(body: &Value) -> Option<String> {
+    let raw = match body.get("image") {
+        Some(Value::String(s)) => s.clone(),
+        Some(obj @ Value::Object(_)) => obj.get("data").and_then(Value::as_str)?.to_string(),
+        _ => return None,
+    };
+    let trimmed = raw.trim();
+    let b64 = trimmed
+        .strip_prefix("data:")
+        .and_then(|rest| rest.split_once(";base64,").map(|(_, data)| data))
+        .unwrap_or(trimmed);
+    (!b64.is_empty()).then(|| b64.to_string())
+}
+
+/// `POST /api/messages/send` — 通过 NapCat OneBot `send_msg` 发送消息。
+///
+/// 支持文本、图片（`image` 为 base64 / data URL，走 `base64://` segment）与
+/// 群聊 @ 提及（`mentions` 为 uin 数组）。`peer.chatType == 2` 按群聊发送，
+/// 其余按私聊发送（与导出层二分类一致）；私聊忽略 `mentions`。私聊
+/// `user_id` 优先取 `peer.peerUin`（对端 QQ 号），缺失时回退 `peerUid`，
+/// 交给 NapCat 自行解析。
+pub async fn send_message(
+    State(state): State<SharedState>,
+    Extension(RequestId(request_id)): Extension<RequestId>,
+    Json(body): Json<Value>,
+) -> Response {
+    if let Some(err) = standalone_guard_with(&state, "发送消息") {
+        return response::error(&err, &request_id);
+    }
+    let Some((chat_type, peer_uid)) = parse_peer(&body) else {
+        let err = ApiError::validation("peer参数不完整", "INVALID_PEER");
+        return response::error(&err, &request_id);
+    };
+    let text = body
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if text.chars().count() > MAX_SEND_MESSAGE_CHARS {
+        let err = ApiError::validation(
+            format!("消息内容过长（最多 {MAX_SEND_MESSAGE_CHARS} 字符）"),
+            "MESSAGE_TOO_LONG",
+        );
+        return response::error(&err, &request_id);
+    }
+
+    // @ 提及仅对群聊生效；每项是纯数字 uin 或 "all"。
+    let mut mentions: Vec<String> = Vec::new();
+    if chat_type == GROUP_CHAT_TYPE {
+        if let Some(list) = body.get("mentions").and_then(Value::as_array) {
+            if list.len() > MAX_SEND_MENTIONS {
+                let err = ApiError::validation(
+                    format!("一次最多 @ {MAX_SEND_MENTIONS} 人"),
+                    "TOO_MANY_MENTIONS",
+                );
+                return response::error(&err, &request_id);
+            }
+            for item in list {
+                let Some(uin) = item.as_str() else {
+                    let err =
+                        ApiError::validation("mentions 元素必须是 uin 字符串", "INVALID_MENTION");
+                    return response::error(&err, &request_id);
+                };
+                let valid = uin == "all"
+                    || (!uin.is_empty()
+                        && uin.len() <= 12
+                        && uin.chars().all(|c| c.is_ascii_digit()));
+                if !valid {
+                    let err = ApiError::validation("无效的 @ 目标 QQ 号", "INVALID_MENTION");
+                    return response::error(&err, &request_id);
+                }
+                if !mentions.iter().any(|m| m == uin) {
+                    mentions.push(uin.to_string());
+                }
+            }
+        }
+    }
+
+    // 图片：先做 base64 长度预检再解码，验证魔数白名单。
+    let mut image_b64: Option<String> = None;
+    if let Some(b64) = extract_image_base64(&body) {
+        if b64.len() > MAX_SEND_IMAGE_BYTES / 3 * 4 + 64 {
+            let err = ApiError::validation("图片过大（最大 20MB）", "IMAGE_TOO_LARGE");
+            return response::error(&err, &request_id);
+        }
+        use base64::Engine as _;
+        let decoded = match base64::engine::general_purpose::STANDARD.decode(b64.as_str()) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                let err = ApiError::validation("图片 base64 无法解码", "INVALID_IMAGE");
+                return response::error(&err, &request_id);
+            }
+        };
+        if decoded.len() > MAX_SEND_IMAGE_BYTES {
+            let err = ApiError::validation("图片过大（最大 20MB）", "IMAGE_TOO_LARGE");
+            return response::error(&err, &request_id);
+        }
+        if !is_supported_image(&decoded) {
+            let err = ApiError::validation(
+                "不支持的图片格式（仅支持 png/jpeg/gif/webp/bmp）",
+                "UNSUPPORTED_IMAGE",
+            );
+            return response::error(&err, &request_id);
+        }
+        image_b64 = Some(b64);
+    }
+
+    let mut segments: Vec<Value> = Vec::new();
+    for uin in &mentions {
+        segments.push(json!({ "type": "at", "data": { "qq": uin } }));
+    }
+    if !text.is_empty() {
+        segments.push(json!({ "type": "text", "data": { "text": text } }));
+    }
+    if let Some(b64) = &image_b64 {
+        segments.push(json!({ "type": "image", "data": { "file": format!("base64://{b64}") } }));
+    }
+    if segments.is_empty() {
+        let err = ApiError::validation("消息内容不能为空", "EMPTY_MESSAGE");
+        return response::error(&err, &request_id);
+    }
+
+    let payload = if chat_type == GROUP_CHAT_TYPE {
+        json!({
+            "message_type": "group",
+            "group_id": peer_uid,
+            "message": segments,
+        })
+    } else {
+        let peer_uin = body
+            .pointer("/peer/peerUin")
+            .and_then(Value::as_str)
+            .filter(|uin| {
+                !uin.is_empty() && *uin != "0" && uin.chars().all(|c| c.is_ascii_digit())
+            });
+        json!({
+            "message_type": "private",
+            "user_id": peer_uin.unwrap_or(peer_uid.as_str()),
+            "message": segments,
+        })
+    };
+
+    match state.napcat.call_onebot_action("send_msg", payload).await {
+        Ok(result) => {
+            // OneBot action 返回 { data: { message_id, time, ... }, ... }，
+            // 兼容直接展开 data 的形态。
+            let data = result.get("data").cloned().unwrap_or(result);
+            // 发送成功后让该会话的消息缓存失效，刷新时能看到刚发的消息。
+            state
+                .invalidate_message_cache_for_peer(chat_type, &peer_uid)
+                .await;
+            response::success(
+                json!({
+                    "sent": true,
+                    "messageId": data.get("message_id").cloned().unwrap_or(Value::Null),
+                    "time": data.get("time").cloned().unwrap_or(Value::Null),
+                }),
+                &request_id,
+            )
+        }
+        Err(error) => {
+            let err = ApiError::new(
+                ErrorType::Api,
+                format!("发送消息失败: {error}"),
+                "SEND_MESSAGE_FAILED",
+            );
+            response::error(&err, &request_id)
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct RoamingExportConfig {
     start_time: i64,

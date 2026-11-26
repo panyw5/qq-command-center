@@ -347,6 +347,20 @@ export async function createNapCatBridge(core, port = resolveBridgePort(), recov
             throw new Error(`NapCatCore method not found: ${method}`);
           }
           result = await fn.apply(service, args);
+        } else if (String(method).startsWith('OneBot.')) {
+          // OneBot action（send_msg 等）在 obContext.actions 上注册，调用约定与
+          // overlay 一致：handler.handle(payload, 'plugin', instance.config)。
+          const actionName = String(method).slice('OneBot.'.length);
+          const pluginBridge = globalThis.__NAPCAT_BRIDGE__;
+          const handler = pluginBridge?.actions?.get?.(actionName);
+          if (!handler || typeof handler.handle !== 'function') {
+            throw new Error(`OneBot action not found: ${actionName}`);
+          }
+          result = await handler.handle(
+            args[0] ?? {},
+            'plugin',
+            pluginBridge?.instance?.config
+          );
         } else if (method === 'PacketApi.getGroupFileUrl') {
           result = await core.apis.PacketApi.pkt.operation.GetGroupFileUrl(
             String(args[0]),

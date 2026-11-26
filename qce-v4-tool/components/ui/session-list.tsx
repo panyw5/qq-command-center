@@ -133,7 +133,7 @@ export interface SessionListProps {
    */
   onSelectMany?: (ids: Set<string>, mode: 'add' | 'remove') => void
   onOpenBatchExportDialog?: () => void
-  onPreviewChat?: (type: 'group' | 'friend', id: string, name: string, peer: { chatType: number, peerUid: string }) => void
+  onPreviewChat?: (type: 'group' | 'friend', id: string, name: string, peer: { chatType: number, peerUid: string, peerUin?: string }) => void
   onOpenTaskWizard?: (
     preset: Pick<CreateTaskForm, "chatType" | "peerUid" | "sessionName"> &
       Partial<Pick<CreateTaskForm, "peerUin" | "historySource">>
@@ -366,6 +366,7 @@ function SessionListComponent({
                 onPreviewChat?.(item.type, item.id, item.name, {
                   chatType,
                   peerUid: item.id,
+                  peerUin: isGroup ? item.id : String(friend?.uin ?? ""),
                 })
               }}
             >

@@ -39,7 +39,7 @@ interface QqLookupCardProps {
     /** 用户点击「漫游导出」时回调；不传则隐藏实验性漫游入口。 */
     onStartRoamingExport?: (preset: { chatType: number; peerUid: string; peerUin?: string; sessionName: string }) => void
     /** 用户点击「预览」时回调；不传则不展示预览按钮。 */
-    onPreview?: (peer: { chatType: number; peerUid: string }, sessionName: string) => void
+    onPreview?: (peer: { chatType: number; peerUid: string; peerUin?: string }, sessionName: string) => void
 }
 
 const UIN_REGEX = /^\d{4,12}$/
@@ -182,7 +182,7 @@ export function QqLookupCard({ initialUin = "", onStartExport, onStartRoamingExp
                                 className="h-8 px-2.5 text-xs rounded-full"
                                 onClick={() =>
                                     onPreview(
-                                        { chatType: 1, peerUid: result.uid! },
+                                        { chatType: 1, peerUid: result.uid!, peerUin: result.uin },
                                         result.remark || result.nick || result.uin,
                                     )
                                 }

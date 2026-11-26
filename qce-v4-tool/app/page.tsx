@@ -222,7 +222,7 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
     type: 'group' | 'friend',
     id: string,
     name: string,
-    peer: { chatType: number, peerUid: string }
+    peer: { chatType: number, peerUid: string, peerUin?: string }
   } | null>(null)
   const [isFilePathModalOpen, setIsFilePathModalOpen] = useState(false)
   const [selectedFile, setSelectedFile] = useState<{ filePath: string; sessionName: string; fileName: string; size?: number } | null>(null)
@@ -708,7 +708,7 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
     type: 'group' | 'friend',
     id: string,
     name: string,
-    peer: { chatType: number, peerUid: string }
+    peer: { chatType: number, peerUid: string, peerUin?: string }
   ) => {
     setPreviewingChat({ type, id, name, peer })
     setIsPreviewModalOpen(true)
@@ -3281,6 +3281,7 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
         open={isPreviewModalOpen}
         onClose={() => setIsPreviewModalOpen(false)}
         chat={previewingChat}
+        canSend={!isStandalone}
         onExport={(peer, timeRange) => {
           handleOpenTaskWizard({
             chatType: peer.chatType,

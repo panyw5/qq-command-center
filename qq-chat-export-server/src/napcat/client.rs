@@ -83,6 +83,18 @@ impl NapCatBridgeClient {
         self.call("Core.selfInfo", json!([])).await
     }
 
+    /// 调用 NapCat OneBot action（`OneBot.<action>` 分发到 `obContext.actions`）。
+    ///
+    /// `payload` 透传为该 action 的参数对象，桥约定为
+    /// `handler.handle(payload, 'plugin', instance.config)`。
+    pub async fn call_onebot_action(
+        &self,
+        action: &str,
+        payload: Value,
+    ) -> Result<Value, BridgeError> {
+        self.call(&format!("OneBot.{action}"), payload).await
+    }
+
     /// 获取群列表。
     pub async fn get_groups(&self, force_refresh: bool) -> Result<Value, BridgeError> {
         self.call("GroupApi.getGroups", json!([force_refresh]))

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::{Extension, State};
+use axum::extract::{DefaultBodyLimit, Extension, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::Router;
@@ -265,6 +265,11 @@ fn build_router(
         .route("/api/users/:uid", get(users::user_detail))
         // 消息。
         .route("/api/messages/fetch", post(messages::fetch_messages))
+        .route(
+            "/api/messages/send",
+            post(messages::send_message)
+                .route_layer(DefaultBodyLimit::max(messages::SEND_MESSAGE_BODY_LIMIT)),
+        )
         .route("/api/messages/export", post(messages::export_messages))
         .route(
             "/api/messages/roaming/calendar",

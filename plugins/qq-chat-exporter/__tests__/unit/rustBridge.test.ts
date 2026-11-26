@@ -187,6 +187,53 @@ test('bridge exposes raw NapCat services with the original arguments', async () 
     }
 });
 
+test('bridge dispatches OneBot actions through the plugin action map', async () => {
+    const handled: unknown[][] = [];
+    const config = { marker: 'instance-config' };
+    const previousBridge = (globalThis as any).__NAPCAT_BRIDGE__;
+    (globalThis as any).__NAPCAT_BRIDGE__ = {
+        actions: new Map([
+            ['send_msg', {
+                handle: async (...args: unknown[]) => {
+                    handled.push(args);
+                    return { data: { message_id: 12345, time: 1700000000 } };
+                }
+            }]
+        ]),
+        instance: { config }
+    };
+    const bridge = await createNapCatBridge({}, 0);
+    try {
+        const payload = {
+            message_type: 'group',
+            group_id: '960420904',
+            message: [{ type: 'text', data: { text: 'hello' } }]
+        };
+        const response = await fetch(`http://127.0.0.1:${bridge.port}/rpc`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ method: 'OneBot.send_msg', params: payload })
+        });
+        const body = await response.json();
+        assert.equal(body.ok, true);
+        assert.deepEqual(handled, [[payload, 'plugin', config]]);
+        assert.equal(body.result.data.message_id, 12345);
+
+        const missing = await fetch(`http://127.0.0.1:${bridge.port}/rpc`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ method: 'OneBot.not_registered', params: {} })
+        });
+        const missingBody = await missing.json();
+        assert.equal(missingBody.ok, false);
+        assert.match(missingBody.error, /OneBot action not found/);
+    } finally {
+        await bridge.stop();
+        if (previousBridge === undefined) delete (globalThis as any).__NAPCAT_BRIDGE__;
+        else (globalThis as any).__NAPCAT_BRIDGE__ = previousBridge;
+    }
+});
+
 
 test('qce-server spawn failures are written to the configured runtime log', async () => {
     const tmp = createTempDir('rust-bridge-log-');
