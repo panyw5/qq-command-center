@@ -439,12 +439,23 @@ impl App {
             AppEvent::Messages(result) => match result {
                 Ok(mut list) => {
                     list.reverse(); // 服务端最新在前 → 展示最旧在前
+                                    // 选中在旧列表尾部 → 跟随新消息保持在尾部；
+                                    // 否则按 msg_id 找回原位，避免轮询把选区拉回底部。
                     let at_tail = self.sel_msg + 1 >= self.messages.len();
+                    let sel_id = (!at_tail)
+                        .then(|| self.messages.get(self.sel_msg).map(|m| m.msg_id.clone()))
+                        .flatten()
+                        .filter(|id| !id.is_empty());
                     self.messages = list;
-                    if at_tail || self.scroll_bottom == 0 {
-                        self.sel_msg = self.messages.len().saturating_sub(1);
-                    }
-                    self.sel_msg = self.sel_msg.min(self.messages.len().saturating_sub(1));
+                    self.sel_msg = if at_tail {
+                        self.messages.len().saturating_sub(1)
+                    } else {
+                        sel_id
+                            .and_then(|id| self.messages.iter().position(|m| m.msg_id == id))
+                            .unwrap_or_else(|| {
+                                self.sel_msg.min(self.messages.len().saturating_sub(1))
+                            })
+                    };
                     self.status = format!("{} 条消息", self.messages.len());
                 }
                 Err(e) => self.status = format!("拉取失败: {e}"),
@@ -913,4 +924,65 @@ fn decode_anim_frames(bytes: &[u8]) -> Vec<AnimFrame> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(id: &str) -> ChatMessage {
+        ChatMessage {
+            msg_id: id.to_string(),
+            time: 0,
+            sender: "u".to_string(),
+            is_self: false,
+            body: "x".to_string(),
+            media: Vec::new(),
+        }
+    }
+
+    fn app() -> App {
+        App::new(QceClient::new("http://127.0.0.1:1", "t"))
+    }
+
+    #[test]
+    fn sel_follows_tail_when_at_tail() {
+        let mut a = app();
+        a.messages = vec![msg("a"), msg("b"), msg("c")];
+        a.sel_msg = 2; // 尾部
+        a.handle_event(AppEvent::Messages(Ok(vec![
+            msg("d"),
+            msg("c"),
+            msg("b"),
+            msg("a"),
+        ])));
+        // 列表 reverse 后 [a,b,c,d]，仍在尾部 → 跟到新尾 d
+        assert_eq!(a.sel_msg, 3);
+        assert_eq!(a.messages[3].msg_id, "d");
+    }
+
+    #[test]
+    fn sel_preserved_by_msg_id_when_scrolled_up() {
+        let mut a = app();
+        a.messages = vec![msg("a"), msg("b"), msg("c")];
+        a.sel_msg = 1; // 上移选中 b
+        a.handle_event(AppEvent::Messages(Ok(vec![
+            msg("d"),
+            msg("c"),
+            msg("b"),
+            msg("a"),
+        ])));
+        assert_eq!(a.sel_msg, 1);
+        assert_eq!(a.messages[1].msg_id, "b");
+    }
+
+    #[test]
+    fn sel_clamped_when_message_gone() {
+        let mut a = app();
+        a.messages = vec![msg("a"), msg("b"), msg("c")];
+        a.sel_msg = 0; // 选中 a，刷新后 a 掉出窗口
+        a.handle_event(AppEvent::Messages(Ok(vec![msg("c"), msg("b")])));
+        assert_eq!(a.sel_msg, 0);
+        assert_eq!(a.messages[0].msg_id, "b");
+    }
 }
