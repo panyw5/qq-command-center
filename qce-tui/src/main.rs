@@ -14,6 +14,7 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use ratatui_image::picker::Picker;
 use std::io;
 use std::time::Duration;
 
@@ -60,6 +61,11 @@ fn run(app: &mut App) -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
+
+    // 图形协议选择：不做 stdin 探测（会污染键盘输入流），靠 env 识别
+    // tmux/iTerm2，其他终端一律用半块字符渲染（真彩色下显示效果也足够好）。
+    let picker = Picker::from_fontsize((8, 16));
+    app.set_picker(picker);
 
     while !app.quit {
         terminal.draw(|f| ui::draw(f, app))?;

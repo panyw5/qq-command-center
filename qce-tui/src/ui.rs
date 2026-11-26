@@ -5,9 +5,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::Frame;
+use ratatui_image::StatefulImage;
 
 const HELP_SESSIONS: &str = "j/k 移动  Enter 打开  Tab 切换  / 过滤  r 刷新  q 退出";
-const HELP_CHAT: &str = "j/k 选择  o 打开媒体  y 复制链接  i 输入  a @  p 图  G 底  Esc 返回";
+const HELP_CHAT: &str = "j/k 选择  o 预览图片  O 外部打开  y 复制  i 输入  a @  p 图  G 底  Esc";
 const HELP_INPUT: &str = "Enter 发送  Esc 取消  (a 加@提及 / p 附加图片先退出输入)";
 
 fn dim() -> Style {
@@ -367,5 +368,31 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     if app.overlay == Overlay::MentionPicker {
         draw_mention_picker(f, app);
+    }
+    if app.overlay == Overlay::Preview {
+        draw_preview(f, app);
+    }
+}
+
+/// 内联图片预览：居中铺满大部分屏幕，按任意键关闭。
+fn draw_preview(f: &mut Frame, app: &mut App) {
+    let area = f.area();
+    let w = (area.width * 90 / 100).clamp(10, area.width);
+    let h = (area.height * 85 / 100).clamp(5, area.height);
+    let rect = Rect {
+        x: (area.width - w) / 2,
+        y: (area.height - h) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} (按任意键关闭) ", app.preview_title));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    if let Some(proto) = app.preview.as_mut() {
+        let widget = StatefulImage::new();
+        f.render_stateful_widget(widget, inner, proto);
     }
 }

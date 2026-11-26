@@ -3,6 +3,8 @@ use crate::model::{ChatMessage, Member, Session};
 use base64::Engine as _;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
+use ratatui_image::picker::Picker;
+use ratatui_image::protocol::StatefulProtocol;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
@@ -23,6 +25,8 @@ pub enum Overlay {
     ImagePath,
     /// 群成员 @ 选择器。
     MentionPicker,
+    /// 图片内联预览。
+    Preview,
 }
 
 /// 会话列表页签。
@@ -59,6 +63,7 @@ pub enum AppEvent {
     Sent(Result<(), String>),
     ImageStaged(Result<(String, String), String>),
     MediaOpened(Result<String, String>),
+    PreviewLoaded(Result<(String, Vec<u8>), String>),
 }
 
 const POLL_INTERVAL: Duration = Duration::from_secs(4);
@@ -95,6 +100,11 @@ pub struct App {
     pub msg_start: usize,
     /// 上次点击（时间, 消息下标），用于双击打开媒体。
     last_click: Option<(Instant, usize)>,
+    /// 终端图形协议选择器（启动时探测，不支持则半块渲染）。
+    picker: Option<Picker>,
+    /// 当前内联预览的图片协议状态。
+    pub preview: Option<StatefulProtocol>,
+    pub preview_title: String,
 
     // 输入区
     pub input: String,
@@ -136,6 +146,9 @@ impl App {
             msg_area: Rect::default(),
             msg_start: 0,
             last_click: None,
+            picker: None,
+            preview: None,
+            preview_title: String::new(),
             input: String::new(),
             image: None,
             image_path: String::new(),
@@ -154,6 +167,11 @@ impl App {
     /// 启动后由 main 调用，加载首个页签。
     pub fn request_initial_load(&mut self) {
         self.load_sessions();
+    }
+
+    /// main 在进入终端原始模式后注入图形协议选择器。
+    pub fn set_picker(&mut self, picker: Picker) {
+        self.picker = Some(picker);
     }
 
     fn spawn<F>(&self, fut: F)
@@ -389,6 +407,21 @@ impl App {
                 Ok(msg) => self.status = msg,
                 Err(e) => self.status = e,
             },
+            AppEvent::PreviewLoaded(result) => match result {
+                Ok((name, bytes)) => match image::load_from_memory(&bytes) {
+                    Ok(dyn_img) => match &self.picker {
+                        Some(picker) => {
+                            self.preview = Some(picker.new_resize_protocol(dyn_img));
+                            self.preview_title = name;
+                            self.overlay = Overlay::Preview;
+                            self.status = format!("预览 {}", self.preview_title);
+                        }
+                        None => self.status = "图形协议未初始化".to_string(),
+                    },
+                    Err(_) => self.status = "不是可预览的图片格式".to_string(),
+                },
+                Err(e) => self.status = format!("加载媒体失败: {e}"),
+            },
         }
     }
 
@@ -408,6 +441,32 @@ impl App {
             Ok(st) => Err(format!("打开失败（退出码 {st}）")),
             Err(e) => Err(format!("无法启动系统打开器: {e}")),
         }
+    }
+
+    /// 内联预览选中消息的图片（下载后经终端协议渲染）。
+    fn preview_media(&mut self, idx: usize) {
+        let (Some(session), Some(msg)) = (self.session.clone(), self.messages.get(idx)) else {
+            return;
+        };
+        let Some(media) = msg.media.first().cloned() else {
+            self.status = "该消息没有可预览的媒体".to_string();
+            return;
+        };
+        if media.local_path.is_none() {
+            self.status = "媒体无本地缓存，按 O 尝试远程打开".to_string();
+            return;
+        }
+        self.status = format!("加载 {} …", media.file_name);
+        let client = self.client.clone();
+        self.spawn(async move {
+            AppEvent::PreviewLoaded(
+                client
+                    .fetch_media(&media, &session)
+                    .await
+                    .map(|(b, _)| (media.file_name.clone(), b))
+                    .map_err(|e| e.to_string()),
+            )
+        });
     }
 
     /// 下载选中消息媒体到缓存目录并用系统看图工具打开；
@@ -551,7 +610,7 @@ impl App {
                     self.sel_msg = idx;
                     if double {
                         self.last_click = None;
-                        self.open_media(idx);
+                        self.preview_media(idx);
                     } else {
                         self.last_click = Some((now, idx));
                     }
@@ -567,6 +626,10 @@ impl App {
             return;
         }
         match self.overlay {
+            Overlay::Preview => {
+                self.overlay = Overlay::None;
+                self.preview = None;
+            }
             Overlay::Input => self.on_key_input(key),
             Overlay::ImagePath => self.on_key_image_path(key),
             Overlay::MentionPicker => self.on_key_mentions(key),
@@ -638,7 +701,8 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 self.sel_msg = self.sel_msg.saturating_sub(1);
             }
-            KeyCode::Char('o') => self.open_media(self.sel_msg),
+            KeyCode::Char('o') => self.preview_media(self.sel_msg),
+            KeyCode::Char('O') => self.open_media(self.sel_msg),
             KeyCode::Char('y') => self.copy_media_link(self.sel_msg),
             KeyCode::PageDown => {
                 self.scroll_bottom = self.scroll_bottom.saturating_sub(10);
