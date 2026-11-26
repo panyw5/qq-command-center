@@ -23,6 +23,25 @@ const TICK: Duration = Duration::from_millis(100);
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // `qce-tui login`：打开 NapCat WebUI 登录页（扫码重登入口）。
+    if args.first().map(String::as_str) == Some("login") {
+        match config::webui_login_url(&args[1..]) {
+            Ok(url) => match open_in_browser(&url) {
+                Ok(()) => println!("已在浏览器打开 NapCat WebUI: {url}"),
+                Err(e) => {
+                    eprintln!("无法自动打开浏览器 ({e})，请手动访问:\n{url}");
+                    std::process::exit(1);
+                }
+            },
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
+
     let cfg = match config::resolve(&args) {
         Ok(c) => c,
         Err(e) => {
@@ -47,6 +66,23 @@ fn app_load_first(app: &mut App) {
     // 触发首次会话加载：直接借用 on_key 里 'r' 的路径太重，
     // 这里给一个公开的入口语义一致的调用。
     app.request_initial_load();
+}
+
+fn open_in_browser(url: &str) -> io::Result<()> {
+    let status = if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(url).status()?
+    } else if cfg!(target_os = "windows") {
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", url])
+            .status()?
+    } else {
+        std::process::Command::new("xdg-open").arg(url).status()?
+    };
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("退出码 {status}")))
+    }
 }
 
 fn restore_terminal() {
