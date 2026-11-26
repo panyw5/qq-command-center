@@ -6,6 +6,7 @@ mod ui;
 
 use api::QceClient;
 use app::App;
+use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{self, Event};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
@@ -87,13 +88,23 @@ fn open_in_browser(url: &str) -> io::Result<()> {
 
 fn restore_terminal() {
     let _ = disable_raw_mode();
-    let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
+    let _ = execute!(
+        io::stdout(),
+        SetCursorStyle::DefaultUserShape,
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    );
 }
 
 fn run(app: &mut App) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        SetCursorStyle::BlinkingBar
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;

@@ -139,6 +139,10 @@ fn message_lines(msg: &ChatMessage, width: usize, selected: bool) -> Vec<Line<'s
     lines
 }
 
+fn tw(s: &str) -> u16 {
+    u16::try_from(unicode_width::UnicodeWidthStr::width(s)).unwrap_or(u16::MAX)
+}
+
 fn draw_sessions(f: &mut Frame, app: &App) {
     let area = f.area();
     let chunks = Layout::default()
@@ -173,6 +177,11 @@ fn draw_sessions(f: &mut Frame, app: &App) {
             .title(" QQ Chat Exporter TUI "),
     );
     f.render_widget(title, chunks[0]);
+    if app.filtering {
+        // 左边框(1) + " QCE "(5) + " "(1) + 页签(6+6+4) + "  /"(3)
+        let x = chunks[0].x + 26 + tw(&app.filter);
+        f.set_cursor_position((x.min(chunks[0].right().saturating_sub(2)), chunks[0].y + 1));
+    }
 
     // 会话列表
     let inner_width = chunks[1].width.saturating_sub(2) as usize;
@@ -215,6 +224,11 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
     ]))
     .block(Block::default().borders(Borders::ALL).title(" 会话 "));
     f.render_widget(title, chunks[0]);
+    if app.filtering {
+        // 左边框(1) + " QCE "(5) + " "(1) + 页签(6+6+4) + "  /"(3)
+        let x = chunks[0].x + 26 + tw(&app.filter);
+        f.set_cursor_position((x.min(chunks[0].right().saturating_sub(2)), chunks[0].y + 1));
+    }
 
     // 消息区：预换行后按距底偏移滚动；顺带回填每条消息的行范围和命中区域
     let inner = Rect {
@@ -275,25 +289,7 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         chunks[2],
     );
 
-    // 输入行
-    let input_line = if app.overlay == Overlay::Input {
-        format!(" > {}_", app.input)
-    } else if app.overlay == Overlay::ImagePath {
-        format!(" 图片路径: {}_", app.image_path)
-    } else {
-        " 按 i 输入消息，Enter 快捷进入输入".to_string()
-    };
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            input_line,
-            if app.overlay == Overlay::Input {
-                Style::default()
-            } else {
-                dim()
-            },
-        )),
-        chunks[3],
-    );
+    draw_input_line(f, app, chunks[3]);
 
     // 状态/帮助合并行
     let help = if app.overlay == Overlay::Input {
@@ -305,6 +301,31 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
         Paragraph::new(Span::styled(format!(" {} | {}", app.status, help), dim())),
         chunks[4],
     );
+}
+
+fn draw_input_line(f: &mut Frame, app: &App, area: Rect) {
+    let (text, cursor_x) = match app.overlay {
+        Overlay::Input => (format!(" > {}", app.input), Some(3 + tw(&app.input))),
+        Overlay::ImagePath => (
+            format!(" 图片路径: {}", app.image_path),
+            Some(11 + tw(&app.image_path)),
+        ),
+        _ => (" 按 i 输入消息，Enter 快捷进入输入".to_string(), None),
+    };
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            text,
+            if app.overlay == Overlay::Input {
+                Style::default()
+            } else {
+                dim()
+            },
+        )),
+        area,
+    );
+    if let Some(x) = cursor_x {
+        f.set_cursor_position((area.x + x.min(area.width.saturating_sub(1)), area.y));
+    }
 }
 
 fn draw_mention_picker(f: &mut Frame, app: &App) {
@@ -329,6 +350,11 @@ fn draw_mention_picker(f: &mut Frame, app: &App) {
         Style::default(),
     ));
     f.render_widget(filter, chunks[0]);
+    // " 过滤: " = 1 + 4 + 1 + 1
+    f.set_cursor_position((
+        chunks[0].x + 7 + tw(&app.member_filter).min(chunks[0].width.saturating_sub(8)),
+        chunks[0].y,
+    ));
 
     let inner_w = chunks[1].width.saturating_sub(2) as usize;
     let items: Vec<ListItem> = app
