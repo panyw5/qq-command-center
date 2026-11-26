@@ -49,3 +49,8 @@ NapCatQQ-clean/
 
 # Frontend static artifacts
 static/
+# NapCat runtime per-account config generated inside the mounted docker/config volume
+docker/config/napcat_*.json
+docker/config/napcat_protocol_*.json
+docker/config/onebot11_*.json
+docker/config/plugins/
