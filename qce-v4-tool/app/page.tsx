@@ -564,6 +564,19 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
     }
   }, [addNotification])
 
+  // 任务"打开文件位置"：容器/远程部署没有文件管理器 → 普通文件回退为下载，
+  // 分块 JSONL 是目录只能提示去服务器导出目录取。
+  const openTaskLocation = useCallback(async (task: ExportTask) => {
+    const ok = await openTaskFileLocation(task)
+    if (ok) return
+    if (isJsonlExport(task)) {
+      addNotification('info', '无法打开文件位置', '当前部署环境没有文件管理器，请到服务器的导出目录获取该分块导出')
+    } else {
+      addNotification('info', '无法打开文件位置', '当前部署环境没有文件管理器，已改为下载到本地')
+      await downloadTask(task)
+    }
+  }, [openTaskFileLocation, isJsonlExport, addNotification, downloadTask])
+
   const handleExportGroupAvatars = useCallback(async (groupCode: string, groupName: string) => {
     const loadingId = addNotification('info', '正在导出', `正在导出群"${groupName}"的成员头像...`)
 
@@ -2067,10 +2080,10 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
                             )}
                             {task.status === "completed" && (
                               <>
-                                <Button size="sm" variant="ghost" className="h-8 rounded-lg px-2" onClick={() => openTaskFileLocation(task)} title="打开文件位置">
+                                <Button size="sm" variant="ghost" className="h-8 rounded-lg px-2" onClick={() => openTaskLocation(task)} title="打开文件位置">
                                   <FolderOpen className="w-4 h-4" />
                                 </Button>
-                                <Button size="sm" variant="ghost" className="h-8 rounded-lg px-2" onClick={() => downloadTask(task)} title={isJsonlExport(task) ? "打开文件夹" : "下载"}>
+                                <Button size="sm" variant="ghost" className="h-8 rounded-lg px-2" onClick={() => isJsonlExport(task) ? openTaskLocation(task) : downloadTask(task)} title={isJsonlExport(task) ? "打开文件夹" : "下载"}>
                                   {isJsonlExport(task) ? <FolderOpen className="w-4 h-4" /> : <Download className="w-4 h-4" />}
                                 </Button>
                               </>
@@ -2344,7 +2357,7 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
                               size="sm"
                               variant="ghost"
                               className="h-8 w-8 rounded-full p-0"
-                              onClick={() => openTaskFileLocation(task)}
+                              onClick={() => openTaskLocation(task)}
                               title="打开文件位置"
                             >
                               <FolderOpen className="w-4 h-4" />
@@ -2353,7 +2366,7 @@ export default function QCEDashboard({ initialTab }: { initialTab?: string } = {
                               size="sm"
                               variant="ghost"
                               className="h-8 w-8 rounded-full p-0"
-                              onClick={() => downloadTask(task)}
+                              onClick={() => isJsonlExport(task) ? openTaskLocation(task) : downloadTask(task)}
                               title={isJsonlExport(task) ? "打开文件夹" : "下载"}
                             >
                               {isJsonlExport(task) ? <FolderOpen className="w-4 h-4" /> : <Download className="w-4 h-4" />}

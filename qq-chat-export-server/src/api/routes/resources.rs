@@ -2162,6 +2162,16 @@ pub async fn open_file_location(
         let err = ApiError::validation("文件路径在安全校验后发生变化", "PATH_NOT_ALLOWED");
         return response::error(&err, &request_id);
     }
+    // 容器内没有文件管理器可用，直接返回带路径的清晰错误，
+    // 由前端回退为下载或提示用户到挂载目录取文件。
+    if std::env::var_os("DOCKER_CONTAINER").is_some() {
+        let err = ApiError::new(
+            ErrorType::FileSystem,
+            format!("容器环境无法打开文件管理器，文件在容器内: {}", path.display()),
+            "FILE_MANAGER_UNAVAILABLE",
+        );
+        return response::error(&err, &request_id);
+    }
     if let Err(error) = open_in_file_manager(&path, should_select_in_file_manager(&path)) {
         let err = if error.kind() == std::io::ErrorKind::PermissionDenied {
             ApiError::validation("文件路径在安全校验后发生变化", "PATH_NOT_ALLOWED")
@@ -2184,6 +2194,14 @@ pub async fn open_export_directory(
 ) -> Response {
     let export_dir = state.path_manager.exports_dir();
     let _ = std::fs::create_dir_all(&export_dir);
+    if std::env::var_os("DOCKER_CONTAINER").is_some() {
+        let err = ApiError::new(
+            ErrorType::FileSystem,
+            format!("容器环境无法打开文件管理器，导出目录在容器内: {}", export_dir.display()),
+            "FILE_MANAGER_UNAVAILABLE",
+        );
+        return response::error(&err, &request_id);
+    }
     let _ = open_in_file_manager(&export_dir, false);
     response::success(json!({ "message": "已打开导出目录" }), &request_id)
 }
