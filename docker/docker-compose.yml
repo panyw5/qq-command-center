@@ -17,6 +17,7 @@ services:
       - qq-session:/app/.config/QQ
       - qce-data:/app/.qq-chat-exporter
       - ./config:/app/napcat/config
+      - ./exports:/app/QQChatExporter
 
 volumes:
   qq-session:
