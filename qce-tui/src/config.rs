@@ -118,17 +118,46 @@ pub fn webui_login_url(args: &[String]) -> Result<String, String> {
     })
 }
 
-/// 在本机常见位置探测 `NapCat` webui.json（Docker 部署挂载目录优先）。
+/// `napcat-qce` Docker 容器是否在运行。
+///
+/// Docker 与本机补丁版 QQ 同一时刻只能一方占用 6099/40653，谁在线谁的令牌才有效，
+/// 因此用容器存活状态决定候选文件的优先顺序。
+fn docker_napcat_running() -> bool {
+    std::process::Command::new("docker")
+        .args(["inspect", "-f", "{{.State.Running}}", "napcat-qce"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
+        .unwrap_or(false)
+}
+
+/// 在本机常见位置探测 `NapCat` webui.json。
+///
+/// Docker 部署挂载目录与本机补丁版 QQ 的运行目录都会在磁盘上留文件，
+/// 按容器在线状态排序后取第一份有效 token。
 fn read_webui_token() -> Option<String> {
-    let cwd = std::env::current_dir().ok()?;
-    let mut candidates = vec![
-        cwd.join("docker/config/webui.json"),
-        cwd.join("config/webui.json"),
-    ];
-    if let Some(dir) = dirs::config_dir() {
-        candidates.push(dir.join("qce-tui").join("webui.json"));
+    let docker_live = docker_napcat_running();
+    let mut docker_paths = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        docker_paths.push(cwd.join("docker/config/webui.json"));
+        docker_paths.push(cwd.join("config/webui.json"));
     }
-    for path in candidates {
+    let mut local_paths = Vec::new();
+    if let Some(dir) = dirs::config_dir() {
+        local_paths.push(dir.join("qce-tui").join("webui.json"));
+    }
+    // macOS 补丁版 QQ：NapCat 运行目录固定在 ~/Library/Application Support/QQ/NapCat。
+    #[cfg(target_os = "macos")]
+    if let Some(home) = dirs::home_dir() {
+        local_paths.push(
+            home.join("Library/Application Support/QQ/NapCat/config/webui.json"),
+        );
+    }
+    let (first, second) = if docker_live {
+        (docker_paths, local_paths)
+    } else {
+        (local_paths, docker_paths)
+    };
+    for path in first.into_iter().chain(second) {
         let Ok(text) = fs::read_to_string(&path) else {
             continue;
         };
@@ -159,10 +188,39 @@ fn read_config_file() -> serde_json::Value {
 }
 
 fn read_local_security_token() -> Option<String> {
+    // Docker 容器在线时令牌在容器内的命名卷里，宿主机的 security.json 是陈旧副本。
+    if docker_napcat_running() {
+        if let Some(token) = read_docker_security_token() {
+            return Some(token);
+        }
+    }
+    // 本机 qce-server（含 macOS 补丁版 QQ 内嵌的实例）。
     let path = dirs::home_dir()?
         .join(".qq-chat-exporter")
         .join("security.json");
     let value: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+    value
+        .get("accessToken")
+        .and_then(serde_json::Value::as_str)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+}
+
+/// 从运行中的 `napcat-qce` 容器内读取 API 令牌。
+fn read_docker_security_token() -> Option<String> {
+    let out = std::process::Command::new("docker")
+        .args([
+            "exec",
+            "napcat-qce",
+            "cat",
+            "/app/.qq-chat-exporter/security.json",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
     value
         .get("accessToken")
         .and_then(serde_json::Value::as_str)
