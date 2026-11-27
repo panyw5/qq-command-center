@@ -2,6 +2,7 @@ mod api;
 mod app;
 mod config;
 mod model;
+mod status;
 mod ui;
 
 use api::QceClient;
@@ -26,11 +27,26 @@ async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     let sub = args.first().map(String::as_str);
-    let rest = if matches!(sub, Some("tui") | Some("login") | Some("export")) {
+    let rest = if matches!(
+        sub,
+        Some("tui") | Some("login") | Some("export") | Some("status") | Some("clean") | Some("restart")
+    ) {
         &args[1..]
     } else {
         &args[..]
     };
+
+    // 统一状态管理：status / clean / restart。
+    if matches!(sub, Some("status") | Some("clean") | Some("restart")) {
+        let (host, token) = config::resolve_permissive();
+        match sub {
+            Some("status") => status::status(&host, token.as_deref()).await,
+            Some("clean") => status::clean(),
+            Some("restart") => status::restart(&host, token.as_deref()).await,
+            _ => unreachable!(),
+        }
+        return;
+    }
 
     // `qce login`：打开 NapCat WebUI 登录页（扫码重登入口）。
     if sub == Some("login") {

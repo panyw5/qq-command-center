@@ -64,6 +64,25 @@ pub fn resolve(args: &[String]) -> Result<Config, String> {
     Ok(Config { host, token })
 }
 
+/// 宽容版解析：`status`/`restart` 等诊断命令即使拿不到 token 也要继续跑。
+pub fn resolve_permissive() -> (String, Option<String>) {
+    match resolve(&[]) {
+        Ok(c) => (c.host, Some(c.token)),
+        Err(_) => {
+            let file = read_config_file();
+            let host = std::env::var("QCE_HOST")
+                .ok()
+                .or_else(|| {
+                    file.get("host")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| DEFAULT_HOST.to_string());
+            (host.trim_end_matches('/').to_string(), None)
+        }
+    }
+}
+
 fn help() -> String {
     "qce — QQ Chat Exporter 命令行入口\n\n\
      用法:\n  \
