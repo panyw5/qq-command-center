@@ -1,4 +1,5 @@
 use crate::api::QceClient;
+use crate::lineedit::LineEdit;
 use crate::model::{ChatMessage, Member, Session};
 use base64::Engine as _;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -110,7 +111,7 @@ pub struct App {
     pub tab: Tab,
     pub sessions: Vec<Session>,
     pub selected: usize,
-    pub filter: String,
+    pub filter: LineEdit,
     pub filtering: bool,
 
     // 聊天页
@@ -134,14 +135,14 @@ pub struct App {
     pub preview: Option<Preview>,
 
     // 输入区
-    pub input: String,
+    pub input: LineEdit,
     pub image: Option<(String, String)>, // (文件名, base64)
-    pub image_path: String,
+    pub image_path: LineEdit,
     pub mentions: Vec<Member>,
 
     // @ 选择器
     pub members: Vec<Member>,
-    pub member_filter: String,
+    pub member_filter: LineEdit,
     pub member_selected: usize,
     pub members_loading: bool,
 
@@ -163,7 +164,7 @@ impl App {
             tab: Tab::Recent,
             sessions: Vec::new(),
             selected: 0,
-            filter: String::new(),
+            filter: LineEdit::default(),
             filtering: false,
             session: None,
             messages: Vec::new(),
@@ -175,12 +176,12 @@ impl App {
             last_click: None,
             picker: None,
             preview: None,
-            input: String::new(),
+            input: LineEdit::default(),
             image: None,
-            image_path: String::new(),
+            image_path: LineEdit::default(),
             mentions: Vec::new(),
             members: Vec::new(),
-            member_filter: String::new(),
+            member_filter: LineEdit::default(),
             member_selected: 0,
             members_loading: false,
             status: "加载会话中…".to_string(),
@@ -277,7 +278,7 @@ impl App {
     }
 
     fn stage_image(&mut self) {
-        let path = self.image_path.trim().to_string();
+        let path = self.image_path.text.trim().to_string();
         if path.is_empty() {
             self.overlay = Overlay::Input;
             return;
@@ -309,7 +310,7 @@ impl App {
         if self.busy {
             return;
         }
-        let text = self.input.trim().to_string();
+        let text = self.input.text.trim().to_string();
         let image = self.image.as_ref().map(|(_, b64)| b64.clone());
         let mentions: Vec<String> = self.mentions.iter().map(|m| m.uin.clone()).collect();
         if text.is_empty() && image.is_none() {
@@ -343,7 +344,7 @@ impl App {
     }
 
     fn filtered_sessions(&self) -> Vec<&Session> {
-        let f = self.filter.to_lowercase();
+        let f = self.filter.text.to_lowercase();
         self.sessions
             .iter()
             .filter(|s| {
@@ -356,7 +357,7 @@ impl App {
     }
 
     pub fn filtered_members(&self) -> Vec<&Member> {
-        let f = self.member_filter.to_lowercase();
+        let f = self.member_filter.text.to_lowercase();
         self.members
             .iter()
             .filter(|m| f.is_empty() || m.name.to_lowercase().contains(&f) || m.uin.contains(&f))
@@ -758,15 +759,11 @@ impl App {
         if self.filtering {
             match key.code {
                 KeyCode::Esc | KeyCode::Enter => self.filtering = false,
-                KeyCode::Backspace => {
-                    self.filter.pop();
-                    self.selected = 0;
+                _ => {
+                    if Self::edit_key(&mut self.filter, key) == EditEffect::Changed {
+                        self.selected = 0;
+                    }
                 }
-                KeyCode::Char(c) => {
-                    self.filter.push(c);
-                    self.selected = 0;
-                }
-                _ => {}
             }
             return;
         }
@@ -842,11 +839,9 @@ impl App {
                 // 发送后保持在输入模式，可连续打字发送（Esc 才退出）。
                 self.send();
             }
-            KeyCode::Backspace => {
-                self.input.pop();
+            _ => {
+                Self::edit_key(&mut self.input, key);
             }
-            KeyCode::Char(c) => self.input.push(c),
-            _ => {}
         }
     }
 
@@ -854,11 +849,9 @@ impl App {
         match key.code {
             KeyCode::Esc => self.overlay = Overlay::Input,
             KeyCode::Enter => self.stage_image(),
-            KeyCode::Backspace => {
-                self.image_path.pop();
+            _ => {
+                Self::edit_key(&mut self.image_path, key);
             }
-            KeyCode::Char(c) => self.image_path.push(c),
-            _ => {}
         }
     }
 
@@ -871,10 +864,6 @@ impl App {
             }
             KeyCode::Down => {
                 self.member_selected = (self.member_selected + 1).min(len.saturating_sub(1));
-            }
-            KeyCode::Backspace => {
-                self.member_filter.pop();
-                self.member_selected = 0;
             }
             KeyCode::Enter => {
                 if let Some(member) = self
@@ -890,13 +879,93 @@ impl App {
                     self.overlay = Overlay::Input;
                 }
             }
-            KeyCode::Char(c) => {
-                self.member_filter.push(c);
-                self.member_selected = 0;
+            _ => {
+                if Self::edit_key(&mut self.member_filter, key) == EditEffect::Changed {
+                    self.member_selected = 0;
+                }
             }
-            _ => {}
         }
     }
+
+    /// 单行编辑通用按键：光标移动、删除、插入。
+    /// 返回编辑效果，调用方据此决定是否联动（如文本变化时重置列表选中）。
+    fn edit_key(edit: &mut LineEdit, key: KeyEvent) -> EditEffect {
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return match key.code {
+                KeyCode::Char('a') => {
+                    edit.home();
+                    EditEffect::Moved
+                }
+                KeyCode::Char('e') => {
+                    edit.end();
+                    EditEffect::Moved
+                }
+                KeyCode::Char('b') | KeyCode::Left => {
+                    edit.word_left();
+                    EditEffect::Moved
+                }
+                KeyCode::Char('f') | KeyCode::Right => {
+                    edit.word_right();
+                    EditEffect::Moved
+                }
+                KeyCode::Char('u') => {
+                    edit.kill_before_cursor();
+                    EditEffect::Changed
+                }
+                KeyCode::Char('k') => {
+                    edit.kill_after_cursor();
+                    EditEffect::Changed
+                }
+                KeyCode::Char('w') | KeyCode::Backspace => {
+                    edit.delete_word_back();
+                    EditEffect::Changed
+                }
+                _ => EditEffect::Ignored,
+            };
+        }
+        match key.code {
+            KeyCode::Left => {
+                edit.move_left();
+                EditEffect::Moved
+            }
+            KeyCode::Right => {
+                edit.move_right();
+                EditEffect::Moved
+            }
+            KeyCode::Home => {
+                edit.home();
+                EditEffect::Moved
+            }
+            KeyCode::End => {
+                edit.end();
+                EditEffect::Moved
+            }
+            KeyCode::Backspace => {
+                edit.backspace();
+                EditEffect::Changed
+            }
+            KeyCode::Delete => {
+                edit.delete();
+                EditEffect::Changed
+            }
+            KeyCode::Char(c) => {
+                edit.insert(c);
+                EditEffect::Changed
+            }
+            _ => EditEffect::Ignored,
+        }
+    }
+}
+
+/// `edit_key` 的效果：移动光标不改变文本，插入/删除才算内容变化。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditEffect {
+    Ignored,
+    Moved,
+    Changed,
 }
 
 /// 解码 GIF/APNG 动图帧；静态图或解码失败返回空 Vec。

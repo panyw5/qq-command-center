@@ -1,6 +1,7 @@
 mod api;
 mod app;
 mod config;
+mod lineedit;
 mod model;
 mod status;
 mod ui;

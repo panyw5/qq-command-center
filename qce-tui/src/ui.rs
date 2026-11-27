@@ -9,7 +9,7 @@ use ratatui_image::{Resize, StatefulImage};
 
 const HELP_SESSIONS: &str = "j/k=move Enter=open Tab=switch /=filter r=reload q=quit";
 const HELP_CHAT: &str = "j/k=sel o=view O=open y=copy s=fwd i=input a=@ p=img G=end Esc=back";
-const HELP_INPUT: &str = "Enter=send Esc=exit";
+const HELP_INPUT: &str = "Enter=send ←/→=move Esc=exit";
 
 fn dim() -> Style {
     Style::default().fg(Color::DarkGray)
@@ -205,15 +205,15 @@ fn draw_sessions(f: &mut Frame, app: &App) {
         .collect::<Vec<_>>();
     let mut title_spans = vec![Span::styled(" QCE ", accent()), Span::raw(" ")];
     title_spans.extend(tabs);
-    if app.filtering || !app.filter.is_empty() {
-        title_spans.push(Span::styled(format!("  /{}", app.filter), dim()));
+    if app.filtering || !app.filter.text.is_empty() {
+        title_spans.push(Span::styled(format!("  /{}", app.filter.text), dim()));
     }
     let title = Paragraph::new(Line::from(title_spans))
         .block(Block::default().borders(Borders::ALL).title(" qce-dev "));
     f.render_widget(title, chunks[0]);
     if app.filtering {
         // 左边框(1) + " QCE "(5) + " "(1) + 页签(8+7+8) + "  /"(3)
-        let x = chunks[0].x + 33 + tw(&app.filter);
+        let x = chunks[0].x + 33 + tw(app.filter.before_cursor());
         f.set_cursor_position((x.min(chunks[0].right().saturating_sub(2)), chunks[0].y + 1));
     }
 
@@ -260,7 +260,7 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(title, chunks[0]);
     if app.filtering {
         // 左边框(1) + " QCE "(5) + " "(1) + 页签(8+7+8) + "  /"(3)
-        let x = chunks[0].x + 33 + tw(&app.filter);
+        let x = chunks[0].x + 33 + tw(app.filter.before_cursor());
         f.set_cursor_position((x.min(chunks[0].right().saturating_sub(2)), chunks[0].y + 1));
     }
 
@@ -338,13 +338,18 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_input_line(f: &mut Frame, app: &App, area: Rect) {
     let (text, cursor_x) = match app.overlay {
-        Overlay::Input => (format!(" > {}", app.input), Some(3 + tw(&app.input))),
+        Overlay::Input => (
+            format!(" > {}", app.input.text),
+            Some(3 + tw(app.input.before_cursor())),
+        ),
         Overlay::ImagePath => (
-            format!(" 图片路径: {}", app.image_path),
-            Some(11 + tw(&app.image_path)),
+            format!(" 图片路径: {}", app.image_path.text),
+            Some(11 + tw(app.image_path.before_cursor())),
         ),
         _ => (" i:compose  Enter:edit".to_string(), None),
     };
+    // 文本比输入行宽时向右滚动，保证光标所在位置始终可见。
+    let scroll = cursor_x.map_or(0, |x| x.saturating_sub(area.width.saturating_sub(1)));
     f.render_widget(
         Paragraph::new(Span::styled(
             text,
@@ -353,10 +358,12 @@ fn draw_input_line(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 dim()
             },
-        )),
+        ))
+        .scroll((0, scroll)),
         area,
     );
     if let Some(x) = cursor_x {
+        let x = x.saturating_sub(scroll);
         f.set_cursor_position((area.x + x.min(area.width.saturating_sub(1)), area.y));
     }
 }
@@ -379,13 +386,15 @@ fn draw_mention_picker(f: &mut Frame, app: &App) {
         .split(rect);
 
     let filter = Paragraph::new(Span::styled(
-        format!(" filter: {}", app.member_filter),
+        format!(" filter: {}", app.member_filter.text),
         Style::default(),
     ));
     f.render_widget(filter, chunks[0]);
     // " filter: " = 8
     f.set_cursor_position((
-        chunks[0].x + 9 + tw(&app.member_filter).min(chunks[0].width.saturating_sub(8)),
+        chunks[0].x
+            + 9
+            + tw(app.member_filter.before_cursor()).min(chunks[0].width.saturating_sub(8)),
         chunks[0].y,
     ));
 
