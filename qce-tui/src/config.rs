@@ -65,10 +65,12 @@ pub fn resolve(args: &[String]) -> Result<Config, String> {
 }
 
 fn help() -> String {
-    "qce-tui — QQ Chat Exporter 终端客户端\n\n\
+    "qce — QQ Chat Exporter 命令行入口\n\n\
      用法:\n  \
-     qce-tui [--host http://127.0.0.1:40653] [--token <token>]\n  \
-     qce-tui login [--webui <url>]\n\n\
+     qce tui [--host http://127.0.0.1:40653] [--token <token>]   打开聊天 TUI\n  \
+     qce login [--webui <url>] [--webui-token <token>]          打开 NapCat WebUI 登录页\n  \
+     qce export [--open]                                       打印导出界面 token 与网址\n\n\
+     不带子命令等同于 qce tui。\n\
      环境变量: QCE_HOST, QCE_TOKEN, QCE_WEBUI_URL, QCE_WEBUI_TOKEN"
         .to_string()
 }
