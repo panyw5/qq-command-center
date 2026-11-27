@@ -87,6 +87,8 @@ impl Tab {
 /// 后台任务回传给 UI 线程的事件。
 pub enum AppEvent {
     Sessions(Tab, Result<Vec<Session>, String>),
+    /// 静默轮询刷新会话列表：不改 busy/状态栏，不打断用户操作。
+    SessionsQuiet(Tab, Result<Vec<Session>, String>),
     Messages(Result<Vec<ChatMessage>, String>),
     Members(Result<Vec<Member>, String>),
     Sent(Result<(), String>),
@@ -96,6 +98,8 @@ pub enum AppEvent {
 }
 
 const POLL_INTERVAL: Duration = Duration::from_secs(4);
+/// 会话页列表静默轮询周期：后端换实例、新会话进来都能自己跟上。
+const SESSIONS_POLL_INTERVAL: Duration = Duration::from_secs(12);
 const MAX_MENTIONS: usize = 20;
 
 #[allow(clippy::struct_excessive_bools)]
@@ -150,6 +154,7 @@ pub struct App {
     pub busy: bool,
     pub quit: bool,
     last_poll: Instant,
+    last_sessions_poll: Instant,
 }
 
 impl App {
@@ -188,6 +193,7 @@ impl App {
             busy: false,
             quit: false,
             last_poll: Instant::now(),
+            last_sessions_poll: Instant::now(),
         }
     }
 
@@ -223,6 +229,20 @@ impl App {
                 Tab::Groups => client.groups().await,
             };
             AppEvent::Sessions(tab, result.map_err(|e| e.to_string()))
+        });
+    }
+
+    /// 静默刷新会话列表：结果回来后按会话身份找回选中项。
+    fn poll_sessions(&mut self) {
+        let client = self.client.clone();
+        let tab = self.tab;
+        self.spawn(async move {
+            let result = match tab {
+                Tab::Recent => client.recent_contacts().await,
+                Tab::Friends => client.friends().await,
+                Tab::Groups => client.groups().await,
+            };
+            AppEvent::SessionsQuiet(tab, result.map_err(|e| e.to_string()))
         });
     }
 
@@ -377,6 +397,14 @@ impl App {
             self.last_poll = Instant::now();
             self.refresh_messages();
         }
+        if self.screen == Screen::Sessions
+            && !self.filtering
+            && !self.busy
+            && self.last_sessions_poll.elapsed() >= SESSIONS_POLL_INTERVAL
+        {
+            self.last_sessions_poll = Instant::now();
+            self.poll_sessions();
+        }
     }
 
     /// 动图预览：按帧延时推进，重新生成对应帧的渲染协议。
@@ -440,6 +468,26 @@ impl App {
                 }
                 Err(e) => self.status = format!("加载失败: {e}"),
             },
+            AppEvent::SessionsQuiet(tab, result) => {
+                // 静默刷新：成功则按会话身份找回选中项，失败不打扰状态栏。
+                if let (Ok(list), true) = (result, self.tab == tab) {
+                    let cur = self
+                        .filtered_sessions()
+                        .get(self.selected)
+                        .map(|s| (s.chat_type, s.peer_uid.clone()));
+                    self.sessions = list;
+                    self.selected = cur
+                        .and_then(|(ct, uid)| {
+                            self.filtered_sessions().iter().position(|s| {
+                                s.chat_type == ct && s.peer_uid == uid
+                            })
+                        })
+                        .unwrap_or_else(|| {
+                            self.selected
+                                .min(self.filtered_sessions().len().saturating_sub(1))
+                        });
+                }
+            }
             AppEvent::Messages(result) => match result {
                 Ok(mut list) => {
                     list.reverse(); // 服务端最新在前 → 展示最旧在前
