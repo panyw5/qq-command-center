@@ -7,9 +7,9 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::Frame;
 use ratatui_image::{Resize, StatefulImage};
 
-const HELP_SESSIONS: &str = "j/k sel  Enter open  Tab sw  / filter  r reload  q quit";
-const HELP_CHAT: &str = "j/k sel  o view  O open  y cp  s fwd  i in  a @  p img  G end  Esc";
-const HELP_INPUT: &str = "Enter send·stay  Esc exit  (a/p outside input)";
+const HELP_SESSIONS: &str = "j/k=move Enter=open Tab=switch /=filter r=reload q=quit";
+const HELP_CHAT: &str = "j/k=sel o=view O=open y=copy s=fwd i=input a=@ p=img G=end Esc=back";
+const HELP_INPUT: &str = "Enter=send Esc=exit";
 
 fn dim() -> Style {
     Style::default().fg(Color::DarkGray)
@@ -159,6 +159,23 @@ fn message_lines(msg: &ChatMessage, width: usize, selected: bool) -> Vec<Line<'s
     lines
 }
 
+/// 把 "key=action key=action" 渲染为成对着色：按键高亮、动作暗色。
+fn help_spans(help: &str) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (i, pair) in help.split(' ').enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" "));
+        }
+        if let Some((k, a)) = pair.split_once('=') {
+            spans.push(Span::styled(k.to_string(), accent()));
+            spans.push(Span::styled(format!("={a}"), dim()));
+        } else {
+            spans.push(Span::styled(pair.to_string(), dim()));
+        }
+    }
+    spans
+}
+
 fn tw(s: &str) -> u16 {
     u16::try_from(unicode_width::UnicodeWidthStr::width(s)).unwrap_or(u16::MAX)
 }
@@ -218,7 +235,7 @@ fn draw_sessions(f: &mut Frame, app: &App) {
     ));
     f.render_widget(status, chunks[2]);
     f.render_widget(
-        Paragraph::new(Span::styled(format!(" {HELP_SESSIONS}"), dim())),
+        Paragraph::new(Line::from(help_spans(HELP_SESSIONS))),
         chunks[3],
     );
 }
@@ -314,10 +331,9 @@ fn draw_chat(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         HELP_CHAT
     };
-    f.render_widget(
-        Paragraph::new(Span::styled(format!(" {} | {}", app.status, help), dim())),
-        chunks[4],
-    );
+    let mut status_spans = vec![Span::styled(format!(" {} | ", app.status), dim())];
+    status_spans.extend(help_spans(help));
+    f.render_widget(Paragraph::new(Line::from(status_spans)), chunks[4]);
 }
 
 fn draw_input_line(f: &mut Frame, app: &App, area: Rect) {
